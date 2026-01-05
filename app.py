@@ -26,8 +26,8 @@ def scarica_spese_da_gmail():
     
     try:
         with MailBox(server).login(user, pwd) as mailbox:
-            # Scarica ultime 15 mail non lette
-            for msg in mailbox.fetch(AND(seen=False), limit=15, reverse=True): 
+            # Toglie 'AND(seen=False)' e cerca le ultime 30 mail in generale
+for msg in mailbox.fetch(limit=30, reverse=True):
                 
                 soggetto = msg.subject
                 corpo = msg.text or msg.html
@@ -139,3 +139,4 @@ st.divider()
 # --- DATI RECENTI ---
 st.subheader("Ultimi Movimenti")
 st.dataframe(df_cloud.head(10), use_container_width=True)
+
