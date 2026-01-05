@@ -1,6 +1,7 @@
 streamlit
 pandas
-streamlit-gsheets
+st-gsheets-connection
 plotly
 imap-tools
 openpyxl
+
