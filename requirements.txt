@@ -1,0 +1,6 @@
+streamlit
+pandas
+streamlit-gsheets
+plotly
+imap-tools
+openpyxl
