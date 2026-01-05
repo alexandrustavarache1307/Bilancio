@@ -15,23 +15,21 @@ except Exception as e:
     st.error("Errore connessione. Controlla i secrets!")
     st.stop()
 
-# --- IL CERVELLO: LEGGE LE MAIL WIDIBA ---
+# --- IL CERVELLO: LEGGE LE MAIL WIDIBA (TUTTE, ANCHE QUELLE LETTE) ---
 def scarica_spese_da_gmail():
     nuove_transazioni = []
     
-    # Leggiamo i segreti
     user = st.secrets["email"]["user"]
     pwd = st.secrets["email"]["password"]
     server = st.secrets["email"]["imap_server"]
     
     try:
         with MailBox(server).login(user, pwd) as mailbox:
-            # Toglie 'AND(seen=False)' e cerca le ultime 30 mail in generale
-            for msg in mailbox.fetch(limit=30, reverse=True):
+            # ORA CERCA LE ULTIME 30 MAIL (Lette e Non lette)
+            for msg in mailbox.fetch(limit=30, reverse=True): 
                 
                 soggetto = msg.subject
                 corpo = msg.text or msg.html
-                # Pulizia testo: rimuove spazi doppi e a capo per facilitare la ricerca
                 corpo_clean = " ".join(corpo.split())
 
                 importo = 0.0
@@ -40,34 +38,33 @@ def scarica_spese_da_gmail():
                 categoria = "DA VERIFICARE"
                 trovato = False
 
-                # --- CASO 1: PAGAMENTO CARTA (Uscita) ---
-                # Esempio: "...pagamento di 17,44 euro ... presso LIDL 1660."
-                # Cattura l'importo e il negozio dopo "presso"
+                # --- FILTRO ANTICIPATO ---
+                # Se l'oggetto o il testo non c'entrano nulla con la banca, saltiamo subito
+                # (Opzionale, ma velocizza se hai tante mail)
+                if "widiba" not in corpo_clean.lower() and "widiba" not in soggetto.lower():
+                     continue
+
+                # --- CASO 1: PAGAMENTO CARTA ---
                 match_uscita = re.search(r'pagamento di\s+([\d.,]+)\s+euro.*?presso\s+(.*?)(?:\.|$)', corpo_clean, re.IGNORECASE)
                 
-                # --- CASO 2: ACCREDITO/BONIFICO (Entrata) ---
-                # Esempio: "...accredito di 40,00 euro per Bonifico Dall'estero."
+                # --- CASO 2: ACCREDITO/BONIFICO ---
                 match_entrata = re.search(r'accredito di\s+([\d.,]+)\s+euro\s+per\s+(.*?)(?:\.|$)', corpo_clean, re.IGNORECASE)
 
                 if match_uscita:
                     importo_str = match_uscita.group(1)
                     negozio = match_uscita.group(2).strip()
                     importo = float(importo_str.replace('.', '').replace(',', '.'))
-                    
                     tipo = "Uscita"
-                    descrizione = negozio  # Es: "LIDL 1660"
+                    descrizione = negozio
                     trovato = True
                     
                 elif match_entrata:
                     importo_str = match_entrata.group(1)
                     motivo = match_entrata.group(2).strip()
                     importo = float(importo_str.replace('.', '').replace(',', '.'))
-                    
                     tipo = "Entrata"
-                    descrizione = motivo # Es: "Bonifico Dall'estero"
+                    descrizione = motivo
                     
-                    # --- TRUCCO PAYPAL ---
-                    # Se dice "Estero" ma nel testo c'è scritto "PAYPAL", lo rinominiamo
                     if "estero" in motivo.lower() and "paypal" in corpo_clean.lower():
                         descrizione = "Accredito PayPal"
                         categoria = "Trasferimenti"
@@ -82,7 +79,6 @@ def scarica_spese_da_gmail():
                         "Tipo": tipo,
                         "Categoria": categoria,
                         "Mese": msg.date.strftime('%b-%y'),
-                        # ID unico per evitare di salvare due volte la stessa spesa
                         "Firma": f"{msg.date}-{importo}-{descrizione[:5]}" 
                     })
                     
@@ -90,7 +86,6 @@ def scarica_spese_da_gmail():
         st.error(f"Errore lettura mail: {e}")
         
     return pd.DataFrame(nuove_transazioni)
-
 # --- INTERFACCIA APP ---
 st.title("☁️ Dashboard Bilancio")
 
@@ -139,6 +134,7 @@ st.divider()
 # --- DATI RECENTI ---
 st.subheader("Ultimi Movimenti")
 st.dataframe(df_cloud.head(10), use_container_width=True)
+
 
 
 
