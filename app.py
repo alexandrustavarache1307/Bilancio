@@ -2,30 +2,29 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
-from imap_tools import MailBox, AND
+from imap_tools import MailBox
 import re 
 
-# --- CONFIGURAZIONE PAGINA ---
+# --- CONFIGURAZIONE ---
 st.set_page_config(page_title="Bilancio Cloud", layout="wide", page_icon="☁️")
 
-# --- CONNESSIONE GOOGLE SHEETS ---
+# --- CONNESSIONE ---
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
     st.error("Errore connessione. Controlla i secrets!")
     st.stop()
 
-# --- IL CERVELLO: LEGGE LE MAIL WIDIBA (TUTTE, ANCHE QUELLE LETTE) ---
+# --- FUNZIONE MAIL (WIDIBA) ---
 def scarica_spese_da_gmail():
     nuove_transazioni = []
-    
     user = st.secrets["email"]["user"]
     pwd = st.secrets["email"]["password"]
     server = st.secrets["email"]["imap_server"]
     
     try:
         with MailBox(server).login(user, pwd) as mailbox:
-            # ORA CERCA LE ULTIME 30 MAIL (Lette e Non lette)
+            # Cerca le ultime 30 mail (lette e non)
             for msg in mailbox.fetch(limit=30, reverse=True): 
                 
                 soggetto = msg.subject
@@ -38,16 +37,11 @@ def scarica_spese_da_gmail():
                 categoria = "DA VERIFICARE"
                 trovato = False
 
-                # --- FILTRO ANTICIPATO ---
-                # Se l'oggetto o il testo non c'entrano nulla con la banca, saltiamo subito
-                # (Opzionale, ma velocizza se hai tante mail)
                 if "widiba" not in corpo_clean.lower() and "widiba" not in soggetto.lower():
                      continue
 
-                # --- CASO 1: PAGAMENTO CARTA ---
+                # REGEX WIDIBA
                 match_uscita = re.search(r'pagamento di\s+([\d.,]+)\s+euro.*?presso\s+(.*?)(?:\.|$)', corpo_clean, re.IGNORECASE)
-                
-                # --- CASO 2: ACCREDITO/BONIFICO ---
                 match_entrata = re.search(r'accredito di\s+([\d.,]+)\s+euro\s+per\s+(.*?)(?:\.|$)', corpo_clean, re.IGNORECASE)
 
                 if match_uscita:
@@ -64,14 +58,14 @@ def scarica_spese_da_gmail():
                     importo = float(importo_str.replace('.', '').replace(',', '.'))
                     tipo = "Entrata"
                     descrizione = motivo
-                    
                     if "estero" in motivo.lower() and "paypal" in corpo_clean.lower():
                         descrizione = "Accredito PayPal"
                         categoria = "Trasferimenti"
-                    
                     trovato = True
 
                 if trovato:
+                    # ID firma per evitare duplicati
+                    firma = f"{msg.date.strftime('%Y%m%d')}-{importo}-{descrizione[:5]}"
                     nuove_transazioni.append({
                         "Data": msg.date.strftime("%Y-%m-%d"),
                         "Descrizione": descrizione,
@@ -79,62 +73,86 @@ def scarica_spese_da_gmail():
                         "Tipo": tipo,
                         "Categoria": categoria,
                         "Mese": msg.date.strftime('%b-%y'),
-                        "Firma": f"{msg.date}-{importo}-{descrizione[:5]}" 
+                        "Firma": firma 
                     })
                     
     except Exception as e:
         st.error(f"Errore lettura mail: {e}")
         
     return pd.DataFrame(nuove_transazioni)
-# --- INTERFACCIA APP ---
+
+# --- INTERFACCIA ---
 st.title("☁️ Dashboard Bilancio")
 
-# Lettura dati dal Cloud
-df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(6)), ttl=0)
+# Carica dati Cloud
+df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(7)), ttl=0) # Ora leggiamo anche la colonna Firma se c'è
 df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
 
-# --- ZONA SINCRONIZZAZIONE ---
-with st.expander("📩 Sincronizza con Widiba", expanded=True):
-    col1, col2 = st.columns([1, 3])
-    if col1.button("Cerca nella Posta"):
-        with st.spinner("Analizzo le mail della banca..."):
+# --- LOGICA DI STATO (MEMORIA) ---
+if "df_preview" not in st.session_state:
+    st.session_state["df_preview"] = pd.DataFrame()
+
+with st.expander("📩 Gestione Transazioni", expanded=True):
+    # 1. Bottone Cerca
+    if st.button("🔎 Cerca Nuove Transazioni"):
+        with st.spinner("Analisi mail in corso..."):
             df_mail = scarica_spese_da_gmail()
             
-        if not df_mail.empty:
-            # Filtro per non vedere cose già salvate
-            df_mail["Duplicato"] = df_mail.apply(
-                lambda x: ((df_cloud["Importo"] == x["Importo"]) & 
-                           (df_cloud["Data"] == x["Data"])).any(), axis=1
-            )
-            df_nuove = df_mail[df_mail["Duplicato"] == False].copy()
-            
-            if not df_nuove.empty:
-                st.success(f"Trovate {len(df_nuove)} nuove operazioni!")
+            if not df_mail.empty:
+                # Filtro duplicati basato sulla 'Firma' o su Data+Importo
+                # Se nel foglio non c'è la colonna Firma, usiamo logica semplice
+                if "Firma" in df_cloud.columns:
+                    firme_esistenti = df_cloud["Firma"].tolist()
+                    df_nuove = df_mail[~df_mail["Firma"].isin(firme_esistenti)]
+                else:
+                    # Fallback vecchia maniera
+                    df_nuove = df_mail
                 
-                # Tabella Interattiva per modifiche veloci
-                df_edit = st.data_editor(
-                    df_nuove[["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese"]],
-                    num_rows="dynamic",
-                    use_container_width=True
-                )
-                
-                if st.button("💾 Salva nel Database"):
-                    df_final = pd.concat([df_cloud, df_edit], ignore_index=True)
-                    df_final = df_final.sort_values("Data", ascending=False)
-                    conn.update(worksheet="DB_TRANSAZIONI", data=df_final)
-                    st.toast("Salvato con successo!", icon="✅")
-                    st.rerun()
+                if not df_nuove.empty:
+                    st.session_state["df_preview"] = df_nuove
+                    st.success(f"Trovate {len(df_nuove)} nuove operazioni!")
+                else:
+                    st.session_state["df_preview"] = pd.DataFrame()
+                    st.info("Nessuna nuova operazione (tutte già presenti).")
             else:
-                st.info("Transazioni trovate, ma erano già nel database.")
-        else:
-            st.warning("Nessuna mail 'Non Letta' trovata.")
+                st.warning("Nessuna mail rilevante trovata.")
+
+    # 2. Mostra Tabella e Bottoni se c'è qualcosa in memoria
+    if not st.session_state["df_preview"].empty:
+        st.divider()
+        st.write("### 📝 Controlla e Modifica prima di Salvare")
+        
+        # Editor modificabile
+        df_da_salvare = st.data_editor(
+            st.session_state["df_preview"],
+            num_rows="dynamic",
+            use_container_width=True,
+            key="editor_dati"
+        )
+        
+        col_a, col_b = st.columns(2)
+        
+        # Tasto SALVA
+        if col_a.button("💾 Conferma e Salva", type="primary"):
+            # Aggiunge al vecchio dataframe
+            df_final = pd.concat([df_cloud, df_da_salvare], ignore_index=True)
+            # Rimuove eventuali colonne extra tecniche prima di salvare (tipo Firma se non la vuoi visibile, ma meglio tenerla)
+            # Ordina per data
+            df_final = df_final.sort_values("Data", ascending=False)
+            
+            # Salva
+            conn.update(worksheet="DB_TRANSAZIONI", data=df_final)
+            
+            # Pulisce memoria
+            st.session_state["df_preview"] = pd.DataFrame()
+            st.toast("Transazioni Salvate!", icon="🎉")
+            st.rerun()
+            
+        # Tasto ANNULLA
+        if col_b.button("❌ Annulla"):
+            st.session_state["df_preview"] = pd.DataFrame()
+            st.rerun()
 
 st.divider()
-
-# --- DATI RECENTI ---
-st.subheader("Ultimi Movimenti")
+st.subheader("Ultimi Movimenti nel Database")
 st.dataframe(df_cloud.head(10), use_container_width=True)
-
-
-
-
