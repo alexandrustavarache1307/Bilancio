@@ -12,7 +12,7 @@ import plotly.express as px
 # ==============================================================================
 st.set_page_config(page_title="Piano Pluriennale", layout="wide", page_icon="☁️")
 
-# Mappa Mesi per conversioni
+# Mappa Mesi per conversioni e visualizzazione
 MAP_MESI = {1:'Gen', 2:'Feb', 3:'Mar', 4:'Apr', 5:'Mag', 6:'Giu', 7:'Lug', 8:'Ago', 9:'Set', 10:'Ott', 11:'Nov', 12:'Dic'}
 MAP_NUM_MESI = {v: k for k, v in MAP_MESI.items()}
 
@@ -30,7 +30,7 @@ MAPPA_KEYWORD = {
 }
 
 # ==============================================================================
-# 2. CONNESSIONE
+# 2. CONNESSIONE AI FOGLI GOOGLE
 # ==============================================================================
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
@@ -38,7 +38,7 @@ except Exception as e:
     st.error("Errore connessione. Controlla i secrets!")
     st.stop()
 
-# --- CARICAMENTO CATEGORIE ---
+# --- CARICAMENTO CATEGORIE (CACHE 60 SECONDI) ---
 @st.cache_data(ttl=60)
 def get_categories():
     try:
@@ -59,23 +59,25 @@ def get_categories():
 CAT_ENTRATE, CAT_USCITE = get_categories()
 LISTA_TUTTE = sorted(list(set(CAT_ENTRATE + CAT_USCITE)))
 
-# --- CARICAMENTO BUDGET (VERSIONE ROBUSTA E FIXATA) ---
+# ==============================================================================
+# 3. CARICAMENTO BUDGET (VERSIONE ROBUSTA 4 COLONNE)
+# ==============================================================================
 @st.cache_data(ttl=0) 
 def get_budget_data():
     try:
-        # Legge solo le prime 4 colonne
+        # Legge solo le prime 4 colonne: A=Mese, B=Categoria, C=Tipo, D=Importo
         df_bud = conn.read(worksheet="DB_BUDGET", usecols=list(range(4))).fillna(0)
         
-        # Rinomina colonne standard
+        # Assegnazione Nomi Colonne
         if len(df_bud.columns) >= 4:
             df_bud.columns = ["Mese", "Categoria", "Tipo", "Importo"]
         
-        # Pulizia base spazi
+        # Pulizia base spazi (Trim)
         for col in ["Mese", "Categoria", "Tipo"]:
             if col in df_bud.columns:
                 df_bud[col] = df_bud[col].astype(str).str.strip()
 
-        # --- 1. NORMALIZZAZIONE MESE ---
+        # --- FUNZIONE INTERNA: NORMALIZZAZIONE MESE ---
         def normalizza_mese(val):
             val = str(val).strip().lower()
             if val.startswith('gen') or val in ['1', '01']: return 'Gen'
@@ -95,7 +97,7 @@ def get_budget_data():
         if "Mese" in df_bud.columns:
             df_bud["Mese"] = df_bud["Mese"].apply(normalizza_mese)
 
-        # --- 2. NORMALIZZAZIONE TIPO ---
+        # --- FUNZIONE INTERNA: NORMALIZZAZIONE TIPO ---
         def normalizza_tipo(val):
             val = str(val).strip().lower()
             if 'usc' in val or 'spes' in val: return 'Uscita'
@@ -105,13 +107,18 @@ def get_budget_data():
         if "Tipo" in df_bud.columns:
             df_bud["Tipo"] = df_bud["Tipo"].apply(normalizza_tipo)
             
-        # --- 3. FIX IMPORTI ---
+        # --- FUNZIONE INTERNA: FIX IMPORTI (VIRGOLE/PUNTI) ---
         if "Importo" in df_bud.columns:
             def pulisci_numero(val):
                 s = str(val).strip().replace('€', '')
-                if '.' in s and ',' in s: s = s.replace('.', '').replace(',', '.')
-                elif ',' in s: s = s.replace(',', '.')
+                # Se c'è punto e virgola (es: 1.000,50)
+                if '.' in s and ',' in s: 
+                    s = s.replace('.', '').replace(',', '.')
+                # Se c'è solo virgola (es: 100,50)
+                elif ',' in s: 
+                    s = s.replace(',', '.')
                 return s
+            
             df_bud["Importo"] = df_bud["Importo"].apply(pulisci_numero)
             df_bud["Importo"] = pd.to_numeric(df_bud["Importo"], errors='coerce').fillna(0)
         
@@ -119,15 +126,22 @@ def get_budget_data():
     except:
         return pd.DataFrame()
 
-# --- UTILS E LOGICA ---
+# ==============================================================================
+# 4. FUNZIONI DI UTILITÀ (MAIL, GRAFICI, LOGICA)
+# ==============================================================================
+
 def trova_categoria_smart(descrizione, lista_categorie_disponibili):
     desc_lower = descrizione.lower()
+    # 1. Cerca nelle Keyword
     for parola_chiave, target_categoria in MAPPA_KEYWORD.items():
         if parola_chiave in desc_lower:
             for cat in lista_categorie_disponibili:
-                if target_categoria.lower() in cat.lower(): return cat
+                if target_categoria.lower() in cat.lower():
+                    return cat
+    # 2. Cerca corrispondenza parziale nel nome
     for cat in lista_categorie_disponibili:
-        if cat.lower() in desc_lower: return cat
+        if cat.lower() in desc_lower:
+            return cat
     return "DA VERIFICARE"
 
 def scarica_spese_da_gmail():
@@ -222,8 +236,8 @@ def scarica_spese_da_gmail():
         
     return pd.DataFrame(nuove_transazioni), pd.DataFrame(mail_scartate)
 
-# --- FUNZIONI DI STILE E GRAFICA ---
 def style_delta(val, inverse=False):
+    """Restituisce lo stile CSS per i numeri positivi/negativi"""
     if inverse:
         color = 'green' if val >= 0 else 'red'
     else:
@@ -231,7 +245,7 @@ def style_delta(val, inverse=False):
     return f'color: {color}; font-weight: bold'
 
 def genera_grafico_avanzato(df, tipo_grafico, col_valore, col_label, titolo, color_sequence):
-    """Genera il grafico in base al selettore dell'utente"""
+    """Genera il grafico Plotly in base al selettore dell'utente"""
     if df.empty or df[col_valore].sum() == 0:
         return None
     
@@ -253,7 +267,7 @@ def genera_grafico_avanzato(df, tipo_grafico, col_valore, col_label, titolo, col
     return fig
 
 # ==============================================================================
-# MAIN APP
+# 5. CARICAMENTO DATI INIZIALE
 # ==============================================================================
 st.title("☁️ Piano Pluriennale 2026")
 
@@ -261,20 +275,26 @@ try:
     df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(7)), ttl=0)
     df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
     df_cloud["Importo"] = pd.to_numeric(df_cloud["Importo"], errors='coerce').fillna(0)
-    if "Categoria" in df_cloud.columns: df_cloud["Categoria"] = df_cloud["Categoria"].astype(str).str.strip()
-except: df_cloud = pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"])
+    if "Categoria" in df_cloud.columns:
+        df_cloud["Categoria"] = df_cloud["Categoria"].astype(str).str.strip()
+except:
+    df_cloud = pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"])
 
+# Inizializzazione Session State
 if "df_mail_found" not in st.session_state: st.session_state["df_mail_found"] = pd.DataFrame()
 if "df_mail_discarded" not in st.session_state: st.session_state["df_mail_discarded"] = pd.DataFrame()
 if "df_manual_entry" not in st.session_state: st.session_state["df_manual_entry"] = pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"])
 
+# ==============================================================================
+# 6. INTERFACCIA UTENTE (TABS)
+# ==============================================================================
 tab_bil, tab1, tab2, tab3 = st.tabs(["📑 RIEPILOGO & BILANCIO", "📥 NUOVE & IMPORTA", "📊 ANALISI GRAFICA", "🗂 STORICO & MODIFICA"])
 
-# ==========================================
-# TAB 1: RIEPILOGO & BILANCIO (NUOVO)
-# ==========================================
+# ==============================================================================
+# TAB 1: RIEPILOGO & BILANCIO (LA NUOVA SCHERMATA)
+# ==============================================================================
 with tab_bil:
-    # Filtri dedicati per il Bilancio
+    # 1. Carichiamo i dati freschi
     df_budget_b = get_budget_data()
     df_analysis_b = df_cloud.copy()
     df_analysis_b["Anno"] = df_analysis_b["Data"].dt.year
@@ -282,7 +302,7 @@ with tab_bil:
     
     st.markdown("### 🏦 Bilancio di Esercizio")
     
-    # Selettori Periodo
+    # 2. Selettori Periodo
     cb1, cb2, cb3 = st.columns(3)
     with cb1: anno_b = st.selectbox("📅 Anno Riferimento", sorted(df_analysis_b["Anno"].unique(), reverse=True) if not df_analysis_b.empty else [2026], key="a_bil")
     with cb2: per_b = st.selectbox("📊 Periodo", ["Mensile", "Trimestrale", "Semestrale", "Annuale"], key="p_bil")
@@ -314,52 +334,52 @@ with tab_bil:
 
     # --- CALCOLO BILANCIO ---
     
-    # 1. Dati Reali del periodo
+    # A. Dati Reali del periodo
     reale_raw = df_analysis_b[(df_analysis_b["Anno"] == anno_b) & (df_analysis_b["MeseNum"].isin(l_num_b))]
     if not reale_raw.empty:
         consuntivo_b = reale_raw.groupby(["Categoria", "Tipo"])["Importo"].sum().reset_index().rename(columns={"Importo": "Reale"})
     else:
         consuntivo_b = pd.DataFrame(columns=["Categoria", "Tipo", "Reale"])
     
-    # 2. Dati Budget del periodo
+    # B. Dati Budget del periodo
     preventivo_b = pd.DataFrame()
     if not df_budget_b.empty and "Mese" in df_budget_b.columns:
         b_raw = df_budget_b[df_budget_b["Mese"].isin(l_mesi_b)]
         if not b_raw.empty:
             preventivo_b = b_raw.groupby(["Categoria", "Tipo"])["Importo"].sum().reset_index().rename(columns={"Importo": "Budget"})
 
-    # 3. Merge Generale
+    # C. Merge Generale
     bilancio = pd.merge(preventivo_b, consuntivo_b, on=["Categoria", "Tipo"], how="outer").fillna(0)
     if "Budget" not in bilancio.columns: bilancio["Budget"] = 0.0
     if "Reale" not in bilancio.columns: bilancio["Reale"] = 0.0
 
     # 4. Estrazione Valori Chiave
     
-    # A. Saldo Iniziale
+    # - Saldo Iniziale
     saldo_ini_row = bilancio[bilancio["Categoria"] == "SALDO INIZIALE"]
     saldo_ini_bud = saldo_ini_row["Budget"].sum()
     saldo_ini_real = saldo_ini_row["Reale"].sum()
     
-    # Se il periodo include Gennaio (o è Gennaio), e non c'è Saldo Reale (perché non è nel DB transazioni), lo prendiamo dal Budget
+    # LOGICA: Se il periodo include Gennaio (o è Gennaio), e non c'è Saldo Reale, lo prendiamo dal Budget
     is_gennaio_incluso = "Gen" in l_mesi_b
     if is_gennaio_incluso and saldo_ini_real == 0:
         saldo_ini_real = saldo_ini_bud
 
-    # B. Entrate Operative (Escluso Saldo Iniziale)
+    # - Entrate Operative (Escluso Saldo Iniziale)
     ent_op_df = bilancio[(bilancio["Tipo"]=="Entrata") & (bilancio["Categoria"]!="SALDO INIZIALE")]
     ent_op_bud = ent_op_df["Budget"].sum()
     ent_op_real = ent_op_df["Reale"].sum()
 
-    # C. Uscite Operative
+    # - Uscite Operative
     usc_op_df = bilancio[bilancio["Tipo"]=="Uscita"]
     usc_op_bud = usc_op_df["Budget"].sum()
     usc_op_real = usc_op_df["Reale"].sum()
 
-    # D. Utile di Periodo (Entrate Operative - Uscite Operative)
+    # - Utile di Periodo (Entrate Operative - Uscite Operative)
     utile_bud = ent_op_bud - usc_op_bud
     utile_real = ent_op_real - usc_op_real
 
-    # E. Saldo Finale (Saldo Iniziale + Utile)
+    # - Saldo Finale (Saldo Iniziale + Utile)
     saldo_fin_bud = saldo_ini_bud + utile_bud
     saldo_fin_real = saldo_ini_real + utile_real
 
@@ -380,22 +400,32 @@ with tab_bil:
         st.subheader("🟢 Dettaglio Entrate")
         df_e_view = ent_op_df[["Categoria", "Budget", "Reale"]].copy()
         df_e_view["Delta"] = df_e_view["Reale"] - df_e_view["Budget"]
-        st.dataframe(df_e_view.sort_values("Reale", ascending=False).style.format("{:.2f} €").map(lambda v: style_delta(v), subset=["Delta"]), use_container_width=True)
+        st.dataframe(
+            df_e_view.sort_values("Reale", ascending=False)
+            .style.format("{:.2f} €", subset=["Budget", "Reale", "Delta"])
+            .map(lambda v: style_delta(v), subset=["Delta"]), 
+            use_container_width=True
+        )
         st.info(f"**Totale Entrate Operative:** {ent_op_real:,.2f} € (Budget: {ent_op_bud:,.2f} €)")
 
     with col_schemino_dx:
         st.subheader("🔴 Dettaglio Uscite")
         df_u_view = usc_op_df[["Categoria", "Budget", "Reale"]].copy()
         df_u_view["Delta"] = df_u_view["Budget"] - df_u_view["Reale"]
-        st.dataframe(df_u_view.sort_values("Reale", ascending=False).style.format("{:.2f} €").map(lambda v: style_delta(v, inverse=True), subset=["Delta"]), use_container_width=True)
+        st.dataframe(
+            df_u_view.sort_values("Reale", ascending=False)
+            .style.format("{:.2f} €", subset=["Budget", "Reale", "Delta"])
+            .map(lambda v: style_delta(v, inverse=True), subset=["Delta"]), 
+            use_container_width=True
+        )
         st.info(f"**Totale Uscite:** {usc_op_real:,.2f} € (Budget: {usc_op_bud:,.2f} €)")
 
     st.markdown("---")
     st.markdown(f"### 💡 Risultato Netto del Periodo (Utile): **{utile_real:+,.2f} €**")
 
-# ==========================================
-# TAB 2: NUOVE & IMPORTA (ORIGINALE)
-# ==========================================
+# ==============================================================================
+# TAB 2: NUOVE & IMPORTA (VERSIONE ORIGINALE COMPLETA)
+# ==============================================================================
 with tab1:
     col_search, col_actions = st.columns([1, 4])
     with col_search:
@@ -473,9 +503,9 @@ with tab1:
             st.success("✅ Tutto salvato correttamente!")
             st.rerun()
 
-# ==========================================
+# ==============================================================================
 # TAB 3: ANALISI GRAFICA (CON ESTETICA AVANZATA)
-# ==========================================
+# ==============================================================================
 with tab2:
     # Caricamento Dati
     df_budget_g = get_budget_data()
@@ -576,9 +606,9 @@ with tab2:
                 use_container_width=True
             )
 
-# ==========================================
+# ==============================================================================
 # TAB 4: STORICO & MODIFICA (DB COMPLETO)
-# ==========================================
+# ==============================================================================
 with tab3:
     st.markdown("### 🗂 Modifica Database Completo")
     df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
