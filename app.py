@@ -9,7 +9,6 @@ import re
 st.set_page_config(page_title="Bilancio Cloud", layout="wide", page_icon="☁️")
 
 # --- 🧠 CERVELLO AI: MAPPA PAROLE CHIAVE -> TUA CATEGORIA ---
-# Modifica qui se vuoi aggiungere nuove associazioni
 MAPPA_KEYWORD = {
     "lidl": "alimentar",
     "conad": "alimentar",
@@ -78,7 +77,6 @@ def get_categories():
         
         return cat_entrate, cat_uscite
     except Exception as e:
-        # Gestione errore se il foglio non si legge
         st.error(f"Errore lettura categorie: {e}")
         return ["DA VERIFICARE"], ["DA VERIFICARE"]
 
@@ -107,7 +105,6 @@ def trova_categoria_smart(descrizione, lista_categorie_disponibili):
 def scarica_spese_da_gmail():
     nuove_transazioni = []
     
-    # Legge credenziali dai secrets
     if "email" in st.secrets:
         user = st.secrets["email"]["user"]
         pwd = st.secrets["email"]["password"]
@@ -183,12 +180,11 @@ st.title("☁️ Bilancio 2026 - Smart AI")
 try:
     df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(7)), ttl=0)
 except:
-    # Se fallisce (es. manca colonna Firma), legge 6 colonne
     df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(6)), ttl=0)
 
 df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
 
-# Inizializza session state per le tabelle temporanee
+# Inizializza session state
 if "df_preview_entrate" not in st.session_state:
     st.session_state["df_preview_entrate"] = pd.DataFrame()
 if "df_preview_uscite" not in st.session_state:
@@ -197,4 +193,96 @@ if "df_preview_uscite" not in st.session_state:
 # TASTO CERCA
 if st.button("🔎 CERCA E CATEGORIZZA", type="primary"):
     with st.spinner("Analisi in corso..."):
-        df_mail = scarica
+        df_mail = scarica_spese_da_gmail() # <--- ECCO LA CORREZIONE
+        
+        if not df_mail.empty:
+            if "Firma" in df_cloud.columns:
+                firme_esistenti = df_cloud["Firma"].astype(str).tolist()
+                df_nuove = df_mail[~df_mail["Firma"].astype(str).isin(firme_esistenti)]
+            else:
+                df_nuove = df_mail 
+            
+            if not df_nuove.empty:
+                st.session_state["df_preview_entrate"] = df_nuove[df_nuove["Tipo"] == "Entrata"]
+                st.session_state["df_preview_uscite"] = df_nuove[df_nuove["Tipo"] == "Uscita"]
+                st.toast(f"Trovate {len(df_nuove)} nuove operazioni!", icon="🔥")
+            else:
+                st.session_state["df_preview_entrate"] = pd.DataFrame()
+                st.session_state["df_preview_uscite"] = pd.DataFrame()
+                st.info("Tutto aggiornato.")
+        else:
+            st.warning("Nessuna mail rilevante trovata (Widiba) nelle ultime 30.")
+
+# Verifica dati
+has_data = not st.session_state["df_preview_entrate"].empty or not st.session_state["df_preview_uscite"].empty
+
+if has_data:
+    st.divider()
+    
+    # --- TABELLA ENTRATE ---
+    df_entrate_edit = pd.DataFrame()
+    if not st.session_state["df_preview_entrate"].empty:
+        st.success("💰 ENTRATE DA REGISTRARE")
+        df_entrate_edit = st.data_editor(
+            st.session_state["df_preview_entrate"],
+            column_config={
+                "Categoria": st.column_config.SelectboxColumn(
+                    "Categoria Entrata",
+                    options=CAT_ENTRATE,
+                    required=True
+                )
+            },
+            use_container_width=True,
+            key="edit_entrate",
+            hide_index=True
+        )
+
+    # --- TABELLA USCITE ---
+    df_uscite_edit = pd.DataFrame()
+    if not st.session_state["df_preview_uscite"].empty:
+        st.error("💸 USCITE DA REGISTRARE")
+        df_uscite_edit = st.data_editor(
+            st.session_state["df_preview_uscite"],
+            column_config={
+                "Categoria": st.column_config.SelectboxColumn(
+                    "Categoria Spesa",
+                    options=CAT_USCITE,
+                    required=True
+                )
+            },
+            use_container_width=True,
+            key="edit_uscite",
+            hide_index=True
+        )
+
+    st.markdown("---")
+    
+    col1, col2 = st.columns([1, 1])
+    
+    if col1.button("💾 SALVA TUTTO NEL DATABASE", type="primary", use_container_width=True):
+        liste_da_unire = []
+        if not df_entrate_edit.empty: liste_da_unire.append(df_entrate_edit)
+        if not df_uscite_edit.empty: liste_da_unire.append(df_uscite_edit)
+        
+        if liste_da_unire:
+            df_final = pd.concat([df_cloud, pd.concat(liste_da_unire)], ignore_index=True)
+            df_final["Data"] = pd.to_datetime(df_final["Data"], errors='coerce')
+            df_final = df_final.sort_values("Data", ascending=False)
+            df_final["Data"] = df_final["Data"].dt.strftime("%Y-%m-%d")
+            
+            conn.update(worksheet="DB_TRANSAZIONI", data=df_final)
+            
+            st.session_state["df_preview_entrate"] = pd.DataFrame()
+            st.session_state["df_preview_uscite"] = pd.DataFrame()
+            st.balloons()
+            st.success("✅ Salvataggio riuscito!")
+            st.rerun()
+
+    if col2.button("❌ Annulla / Pulisci"):
+        st.session_state["df_preview_entrate"] = pd.DataFrame()
+        st.session_state["df_preview_uscite"] = pd.DataFrame()
+        st.rerun()
+
+st.divider()
+st.caption("Ultimi movimenti salvati:")
+st.dataframe(df_cloud.head(5), use_container_width=True)
