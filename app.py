@@ -193,7 +193,6 @@ def scarica_spese_da_gmail():
                     r'hai\s+ricevuto\s+([\d.,]+)\s+euro\s+da\s+(.*?)(?:\.|$)'
                 ]
 
-                # PROVA USCITE
                 for rx in regex_uscite:
                     match = re.search(rx, corpo_clean, re.IGNORECASE)
                     if match:
@@ -206,7 +205,6 @@ def scarica_spese_da_gmail():
                         trovato = True
                         break 
 
-                # PROVA ENTRATE
                 if not trovato:
                     for rx in regex_entrate:
                         match = re.search(rx, corpo_clean, re.IGNORECASE)
@@ -248,7 +246,6 @@ def scarica_spese_da_gmail():
     return pd.DataFrame(nuove_transazioni), pd.DataFrame(mail_scartate)
 
 def style_delta(val, inverse=False):
-    """Stile CSS per i numeri positivi/negativi."""
     if inverse:
         color = 'green' if val >= 0 else 'red'
     else:
@@ -256,7 +253,6 @@ def style_delta(val, inverse=False):
     return f'color: {color}; font-weight: bold'
 
 def genera_grafico_avanzato(df, tipo_grafico, col_valore, col_label, titolo, color_sequence):
-    """Crea grafici Plotly avanzati."""
     if df.empty or df[col_valore].sum() == 0:
         return None
     
@@ -277,7 +273,6 @@ def genera_grafico_avanzato(df, tipo_grafico, col_valore, col_label, titolo, col
     return fig
 
 def crea_tachimetro(valore, titolo, min_v=0, max_v=100, soglia_ok=50):
-    """Crea un grafico gauge (tachimetro)."""
     fig = go.Figure(go.Indicator(
         mode = "gauge+number",
         value = valore,
@@ -300,7 +295,6 @@ def crea_tachimetro(valore, titolo, min_v=0, max_v=100, soglia_ok=50):
 # ==============================================================================
 st.title("☁️ Piano Pluriennale 2026")
 
-# Caricamento del Database Principale
 try:
     df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(7)), ttl=0)
     df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
@@ -310,12 +304,13 @@ try:
 except:
     df_cloud = pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"])
 
-# Inizializzazione Session State
 if "df_mail_found" not in st.session_state: st.session_state["df_mail_found"] = pd.DataFrame()
 if "df_mail_discarded" not in st.session_state: st.session_state["df_mail_discarded"] = pd.DataFrame()
 if "df_manual_entry" not in st.session_state: st.session_state["df_manual_entry"] = pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"])
 
-# Creazione delle Schede (Tabs)
+# ==============================================================================
+# 6. DEFINIZIONE TABS PRINCIPALI
+# ==============================================================================
 tab_bil, tab_kpi, tab_graf, tab_imp, tab_stor = st.tabs([
     "📑 BILANCIO", 
     "📈 INDICI & KPI", 
@@ -328,7 +323,6 @@ tab_bil, tab_kpi, tab_graf, tab_imp, tab_stor = st.tabs([
 # TAB 1: RIEPILOGO & BILANCIO
 # ==============================================================================
 with tab_bil:
-    # Caricamento dati per il bilancio
     df_budget_b = get_budget_data()
     df_analysis_b = df_cloud.copy()
     df_analysis_b["Anno"] = df_analysis_b["Data"].dt.year
@@ -336,12 +330,9 @@ with tab_bil:
     
     st.markdown("### 🏦 Bilancio di Esercizio")
     
-    # Filtri Periodo
     cb1, cb2, cb3 = st.columns(3)
-    with cb1:
-        anno_b = st.selectbox("📅 Anno Riferimento", sorted(df_analysis_b["Anno"].unique(), reverse=True) if not df_analysis_b.empty else [2026], key="a_bil")
-    with cb2:
-        per_b = st.selectbox("📊 Periodo", ["Mensile", "Trimestrale", "Semestrale", "Annuale"], key="p_bil")
+    with cb1: anno_b = st.selectbox("📅 Anno Riferimento", sorted(df_analysis_b["Anno"].unique(), reverse=True) if not df_analysis_b.empty else [2026], key="a_bil")
+    with cb2: per_b = st.selectbox("📊 Periodo", ["Mensile", "Trimestrale", "Semestrale", "Annuale"], key="p_bil")
     
     l_mesi_b = []
     l_num_b = []
@@ -382,32 +373,28 @@ with tab_bil:
         if not b_raw.empty:
             preventivo_b = b_raw.groupby(["Categoria", "Tipo"])["Importo"].sum().reset_index().rename(columns={"Importo": "Budget"})
 
-    # Unione dei dati
+    # Unione dati
     bilancio = pd.merge(preventivo_b, consuntivo_b, on=["Categoria", "Tipo"], how="outer").fillna(0)
     if "Budget" not in bilancio.columns: bilancio["Budget"] = 0.0
     if "Reale" not in bilancio.columns: bilancio["Reale"] = 0.0
 
-    # Calcolo Metriche Finanziarie
+    # Estrazione Valori Chiave
     saldo_ini_row = bilancio[bilancio["Categoria"] == "SALDO INIZIALE"]
     saldo_ini_bud = saldo_ini_row["Budget"].sum()
     saldo_ini_real = saldo_ini_row["Reale"].sum()
     
-    # Fix Saldo Iniziale per Gennaio
     is_gennaio_incluso = "Gen" in l_mesi_b
     if is_gennaio_incluso and saldo_ini_real == 0:
         saldo_ini_real = saldo_ini_bud
 
-    # Entrate Operative
     ent_op_df = bilancio[(bilancio["Tipo"]=="Entrata") & (bilancio["Categoria"]!="SALDO INIZIALE")]
     ent_op_bud = ent_op_df["Budget"].sum()
     ent_op_real = ent_op_df["Reale"].sum()
 
-    # Uscite Operative
     usc_op_df = bilancio[bilancio["Tipo"]=="Uscita"]
     usc_op_bud = usc_op_df["Budget"].sum()
     usc_op_real = usc_op_df["Reale"].sum()
 
-    # Totali
     utile_bud = ent_op_bud - usc_op_bud
     utile_real = ent_op_real - usc_op_real
     saldo_fin_bud = saldo_ini_bud + utile_bud
@@ -420,11 +407,10 @@ with tab_bil:
     m2.metric("📈 Entrate Operative (Reale)", f"{ent_op_real:,.2f} €", delta=f"{(ent_op_real-ent_op_bud):,.2f} € vs Budget")
     m3.metric("📉 Uscite Totali (Reale)", f"{usc_op_real:,.2f} €", delta=f"{(usc_op_bud-usc_op_real):,.2f} € vs Budget", delta_color="inverse")
     m4.metric("🏁 Saldo Finale (Reale)", f"{saldo_fin_real:,.2f} €", delta=f"Utile Periodo: {utile_real:,.2f} €")
+    
     st.divider()
 
-    # Schemino Entrate vs Uscite
     col_schemino_sx, col_schemino_dx = st.columns(2)
-    
     with col_schemino_sx:
         st.subheader("🟢 Dettaglio Entrate")
         df_e_view = ent_op_df[["Categoria", "Budget", "Reale"]].copy()
@@ -466,16 +452,18 @@ with tab_kpi:
     with col_legenda:
         with st.expander("ℹ️ Spiegazione Indici (Legenda)"):
             st.markdown("""
-            * **ROE (Rendimento):** Quanto rendono le tue risorse totali. Formula: `(Saldo Fin - Saldo Ini) / (Saldo Ini + Entrate)`.
-            * **IER (Efficienza Risparmio):** Percentuale delle entrate che diventa risparmio. Formula: `Utile / Entrate`.
-            * **Growth (Crescita):** Di quanto è cresciuto il patrimonio rispetto all'inizio anno. Formula: `(Saldo Fin - Saldo Ini) / Saldo Ini`.
-            * **IAT (Avanzamento Target):** Percentuale di completamento dell'obiettivo annuale.
+            * **ROE (Rendimento):** Rendimento sulle risorse disponibili. `(Saldo Fin - Saldo Ini) / (Saldo Ini + Entrate)`.
+            * **Growth (Crescita):** Crescita patrimonio. `(Saldo Fin - Saldo Ini) / Saldo Ini`.
+            * **IER (Risparmio):** Efficienza annuale. `Utile / Entrate`.
+            * **IER Giornaliero:** Efficienza ad oggi. `Saldo Attuale / (Saldo Ini + Entrate)`.
+            * **IAT (Target):** Avanzamento obiettivo. `(Saldo Fin - Saldo Ini) / (Target - Saldo Ini)`.
+            * **IPP (Performance):** Indice combinato di progresso ed efficienza.
             """)
 
-    # Calcoli KPI Annuali
+    # Calcoli Annuali per KPI
     df_ana_k = df_cloud[df_cloud["Data"].dt.year == datetime.now().year]
     
-    # Saldo Iniziale Annuale
+    # Saldo Iniziale Anno (Gennaio)
     bud_g = get_budget_data()
     saldo_ini_anno = 0.0
     if not bud_g.empty:
@@ -486,30 +474,54 @@ with tab_kpi:
     utile_anno = ent_tot_anno - usc_tot_anno
     saldo_fin_anno = saldo_ini_anno + utile_anno
     
-    # Formule Indicatori
     risorse_disp = saldo_ini_anno + ent_tot_anno
+    
+    # --- FORMULE KPI ---
     
     # 1. ROE
     roe = ((saldo_fin_anno - saldo_ini_anno) / risorse_disp * 100) if risorse_disp > 0 else 0
-    # 2. IER
+    
+    # 2. IER (Annuale)
     ier = (utile_anno / ent_tot_anno * 100) if ent_tot_anno > 0 else 0
+    
     # 3. Growth
     growth = ((saldo_fin_anno - saldo_ini_anno) / saldo_ini_anno * 100) if saldo_ini_anno > 0 else 0
+    
     # 4. IAT
     delta_target = target_patrimoniale - saldo_ini_anno
     iat = ((saldo_fin_anno - saldo_ini_anno) / delta_target * 100) if delta_target > 0 else 0
+    
     # 5. IAT Lineare
     iat_lineare = (datetime.now().month / 12) * 100
+
+    # 6. IER Giornaliero (NUOVO)
+    # Saldo Attuale / (Saldo Iniziale + Entrate Cumulative)
+    ier_giornaliero = (saldo_fin_anno / risorse_disp * 100) if risorse_disp > 0 else 0
+
+    # 7. IPP (NUOVO)
+    # (Avanzamento Target %) * (Efficienza Risorse %)
+    term_iat = (saldo_fin_anno - saldo_ini_anno) / delta_target if delta_target > 0 else 0
+    term_eff = saldo_fin_anno / risorse_disp if risorse_disp > 0 else 0
+    ipp = term_iat * term_eff * 100
+
+    # --- VISUALIZZAZIONE KPI ---
     
-    # Visualizzazione
+    # Riga 1: Indici Generali
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("ROE (Rendimento)", f"{roe:.2f}%", help="Rendimento sul capitale")
-    k2.metric("Growth (Crescita)", f"{growth:.2f}%", help="Crescita patrimonio da Gennaio")
-    k3.metric("IER (Risparmio)", f"{ier:.2f}%", help="Efficienza: Utile su Entrate")
-    k4.metric("IAT (Target)", f"{iat:.2f}%", delta=f"{iat-iat_lineare:.1f}% vs Lineare", help="Avanzamento verso l'obiettivo")
+    k1.metric("ROE (Rendimento)", f"{roe:.2f}%", help="Rendimento sul capitale disponibile")
+    k2.metric("Growth (Crescita)", f"{growth:.2f}%", help="Crescita pura del patrimonio")
+    k3.metric("IER (Risparmio)", f"{ier:.2f}%", help="Utile / Entrate")
+    k4.metric("IAT (Target)", f"{iat:.2f}%", delta=f"{iat-iat_lineare:.1f}% vs Lineare", help="Avanzamento verso l'obiettivo annuale")
+    
+    # Riga 2: Indici Avanzati (NUOVI)
+    st.divider()
+    ka1, ka2 = st.columns(2)
+    ka1.metric("IER Giornaliero", f"{ier_giornaliero:.2f}%", help="Efficienza risorse ad oggi: Saldo Attuale / Risorse Totali")
+    ka2.metric("IPP (Performance)", f"{ipp:.2f}", help="Indice combinato: Avanzamento Target * Efficienza Risorse")
     
     st.divider()
     
+    # Grafici Gauge
     gc1, gc2 = st.columns(2)
     with gc1:
         st.plotly_chart(crea_tachimetro(ier, "Efficienza Risparmio (IER)", max_v=50, soglia_ok=20), use_container_width=True)
@@ -534,22 +546,17 @@ with tab_graf:
             l_mesi_g, l_num_g = [m], [MAP_NUM_MESI[m]]
         elif per_g == "Trimestrale":
             t = st.selectbox("Trimestre", ["Q1 (Gen-Mar)", "Q2 (Apr-Giu)", "Q3 (Lug-Set)", "Q4 (Ott-Dic)"], key="t_graf")
-            if "Q1" in t: l_num_g = [1, 2, 3]
-            elif "Q2" in t: l_num_g = [4, 5, 6]
-            elif "Q3" in t: l_num_g = [7, 8, 9]
-            else: l_num_g = [10, 11, 12]
+            l_num_g = [1,2,3] if "Q1" in t else [4,5,6] if "Q2" in t else [7,8,9] if "Q3" in t else [10,11,12]
             l_mesi_g = [MAP_MESI[n] for n in l_num_g]
         elif per_g == "Semestrale":
             s = st.selectbox("Semestre", ["Semestre 1 (Gen-Giu)", "Semestre 2 (Lug-Dic)"], key="s_graf")
-            if "1" in s: l_num_g = [1, 2, 3, 4, 5, 6]
-            else: l_num_g = [7, 8, 9, 10, 11, 12]
+            l_num_g = range(1,7) if "1" in s else range(7,13)
             l_mesi_g = [MAP_MESI[n] for n in l_num_g]
         elif per_g == "Annuale":
             st.write("Tutto l'anno")
             l_num_g = list(range(1, 13))
             l_mesi_g = list(MAP_MESI.values())
 
-    # Filtro Dati
     df_filt_g = df_analysis_g[(df_analysis_g["Anno"] == anno_g) & (df_analysis_g["MeseNum"].isin(l_num_g))]
     
     cons_g = df_filt_g.groupby(["Categoria", "Tipo"])["Importo"].sum().reset_index().rename(columns={"Importo": "Reale"}) if not df_filt_g.empty else pd.DataFrame(columns=["Categoria", "Tipo", "Reale"])
@@ -575,6 +582,7 @@ with tab_graf:
     col_val = "Reale" if "Reale" in source_data else "Budget"
 
     cl, cr = st.columns(2)
+    
     out_g = merged_g[merged_g["Tipo"]=="Uscita"].copy()
     with cl:
         st.markdown(f"### 🔴 Uscite ({col_val})")
@@ -582,7 +590,8 @@ with tab_graf:
             fig = genera_grafico_avanzato(out_g, chart_type, col_val, "Categoria", "Uscite", px.colors.sequential.RdBu)
             if fig: st.plotly_chart(fig, use_container_width=True)
             st.dataframe(
-                out_g.sort_values("Budget", ascending=False)
+                out_g[["Categoria", "Budget", "Reale", "Delta"]]
+                .sort_values("Budget", ascending=False)
                 .style.format("{:.2f} €", subset=["Budget", "Reale", "Delta"])
                 .map(lambda v: style_delta(v, inverse=True), subset=["Delta"]),
                 use_container_width=True
@@ -595,7 +604,8 @@ with tab_graf:
             fig = genera_grafico_avanzato(inc_g, chart_type, col_val, "Categoria", "Entrate", px.colors.sequential.Teal)
             if fig: st.plotly_chart(fig, use_container_width=True)
             st.dataframe(
-                inc_g.sort_values("Reale", ascending=False)
+                inc_g[["Categoria", "Budget", "Reale", "Delta"]]
+                .sort_values("Reale", ascending=False)
                 .style.format("{:.2f} €", subset=["Budget", "Reale", "Delta"])
                 .map(lambda v: style_delta(v), subset=["Delta"]),
                 use_container_width=True
@@ -618,8 +628,8 @@ with tab_imp:
     # Visualizzazione Mail Scartate
     if not st.session_state["df_mail_discarded"].empty:
         with st.expander(f"⚠️ {len(st.session_state['df_mail_discarded'])} Mail Scartate", expanded=True):
-            st.dataframe(st.session_state["df_mail_discarded"][["Data", "Descrizione"]], use_container_width=True)
-            if st.button("⬇️ Recupera"):
+            st.dataframe(st.session_state["df_mail_discarded"][["Data", "Descrizione"]], use_container_width=True, hide_index=True)
+            if st.button("⬇️ Recupera e Correggi Manualmente"):
                 recuperate = st.session_state["df_mail_discarded"].copy()
                 st.session_state["df_manual_entry"] = pd.concat([st.session_state["df_manual_entry"], recuperate], ignore_index=True)
                 st.session_state["df_mail_discarded"] = pd.DataFrame()
@@ -634,6 +644,7 @@ with tab_imp:
     if not df_new.empty:
         exist = df_cloud["Firma"].astype(str).tolist() if "Firma" in df_cloud.columns else []
         df_new = df_new[~df_new["Firma"].astype(str).isin(exist)]
+        
         df_view_entrate = df_new[df_new["Tipo"] == "Entrata"]
         df_view_uscite = df_new[df_new["Tipo"] == "Uscita"]
 
