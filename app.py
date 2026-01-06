@@ -31,7 +31,6 @@ def scarica_spese_da_gmail():
                 corpo = msg.text or msg.html
                 corpo_clean = " ".join(corpo.split())
                 
-                # Filtro rapido Widiba
                 if "widiba" not in corpo_clean.lower() and "widiba" not in soggetto.lower():
                      continue
 
@@ -64,7 +63,7 @@ def scarica_spese_da_gmail():
                     trovato = True
 
                 if trovato:
-                    # Crea una firma unica per questa transazione
+                    # Firma unica
                     firma = f"{msg.date.strftime('%Y%m%d')}-{importo}-{descrizione[:10]}"
                     nuove_transazioni.append({
                         "Data": msg.date.strftime("%Y-%m-%d"),
@@ -82,78 +81,81 @@ def scarica_spese_da_gmail():
     return pd.DataFrame(nuove_transazioni)
 
 # --- INTERFACCIA ---
-st.title("☁️ Dashboard Bilancio v2") # Ho cambiato il titolo per farti capire se è aggiornata
+st.title("☁️ Dashboard Bilancio v3")
 
-# Legge il foglio (tenta di leggere 7 colonne inclusa la Firma)
+# Lettura dati
 try:
     df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(7)), ttl=0)
-    df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
 except:
-    # Se fallisce (magari manca la colonna Firma), legge solo le prime 6
     df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(6)), ttl=0)
-    df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
-    st.warning("⚠️ Aggiungi la colonna 'Firma' al foglio Google (colonna G) per evitare duplicati!")
 
-# --- GESTIONE MEMORIA (Session State) ---
+# Pulizia preventiva date in lettura
+df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
+
+# --- SESSION STATE ---
 if "df_preview" not in st.session_state:
     st.session_state["df_preview"] = pd.DataFrame()
 
-# Tasto Cerca (Sempre visibile in alto)
-if st.button("🔎 CERCA TRANSAZIONI NELLA MAIL", type="primary", use_container_width=True):
+# Tasto CERCA
+if st.button("🔎 CERCA TRANSAZIONI NELLA MAIL", type="primary"):
     with st.spinner("Sto leggendo le mail..."):
         df_mail = scarica_spese_da_gmail()
         
         if not df_mail.empty:
-            # Filtro duplicati
             if "Firma" in df_cloud.columns:
                 firme_esistenti = df_cloud["Firma"].astype(str).tolist()
                 df_nuove = df_mail[~df_mail["Firma"].astype(str).isin(firme_esistenti)]
             else:
-                df_nuove = df_mail # Se manca la colonna firma, mostra tutto
+                df_nuove = df_mail 
             
             if not df_nuove.empty:
                 st.session_state["df_preview"] = df_nuove
                 st.toast(f"Trovate {len(df_nuove)} transazioni!", icon="🔥")
             else:
                 st.session_state["df_preview"] = pd.DataFrame()
-                st.info("Nessuna transazione *nuova* trovata (erano già tutte salvate).")
+                st.info("Nessuna transazione nuova trovata.")
         else:
             st.warning("Nessuna mail di Widiba trovata nelle ultime 30.")
 
-# --- ZONA DI SALVATAGGIO (Appare solo se ci sono dati) ---
+# --- SALVATAGGIO ---
 if not st.session_state["df_preview"].empty:
     st.divider()
-    st.markdown("### 👇 Controlla qui sotto e SALVA")
+    st.markdown("### 👇 Controlla e SALVA")
     
-    # Tabella modificabile
     df_da_salvare = st.data_editor(
         st.session_state["df_preview"],
         num_rows="dynamic",
-        use_container_width=True,
+        use_container_width=True, # Lascio questo per compatibilità, l'errore giallo è innocuo
         key="editor_dati"
     )
     
-    # BOTTONE SALVA GIGANTE
     if st.button("💾 CLICCA QUI PER SALVARE NEL FOGLIO GOOGLE 💾", type="primary", use_container_width=True):
-        # Unione e salvataggio
+        
+        # 1. Unione
         df_final = pd.concat([df_cloud, df_da_salvare], ignore_index=True)
         
-        # Ordina per data (più recenti in alto)
+        # 2. FIX CRUCIALE: Convertiamo TUTTO in data vera prima di ordinare
+        df_final["Data"] = pd.to_datetime(df_final["Data"], errors='coerce')
+        
+        # 3. Ora l'ordinamento funziona perché sono tutti Timestamp
         df_final = df_final.sort_values("Data", ascending=False)
         
-        # Scrive su Google Sheets
+        # 4. Riconvertiamo in stringa bella per Google Sheets (YYYY-MM-DD)
+        # Questo evita che nel foglio escano date strane
+        df_final["Data"] = df_final["Data"].dt.strftime("%Y-%m-%d")
+        
+        # 5. Aggiornamento
         conn.update(worksheet="DB_TRANSAZIONI", data=df_final)
         
-        # Pulisce la memoria
         st.session_state["df_preview"] = pd.DataFrame()
         st.balloons()
         st.success("✅ Salvataggio Completato!")
         st.rerun()
 
-    if st.button("❌ Annulla / Pulisci"):
+    if st.button("❌ Annulla"):
         st.session_state["df_preview"] = pd.DataFrame()
         st.rerun()
 
 st.divider()
-st.caption("Ultimi movimenti salvati nel DB:")
+st.caption("Ultimi movimenti:")
 st.dataframe(df_cloud.head(5), use_container_width=True)
