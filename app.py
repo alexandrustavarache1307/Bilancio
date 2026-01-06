@@ -8,19 +8,17 @@ import uuid
 import plotly.express as px
 
 # ==============================================================================
-# 1. CONFIGURAZIONE PAGINA E FUNZIONI DI UTILITÀ
+# 1. CONFIGURAZIONE PAGINA
 # ==============================================================================
 st.set_page_config(page_title="Piano Pluriennale", layout="wide", page_icon="☁️")
 
-# Funzione per pulire le chiavi di unione (Risolve il problema del matching)
+# Funzione essenziale per unire Categorie scritte in modo diverso (es: "Spesa" vs "SPESA ")
 def clean_key(series):
-    """Rimuove spazi extra e converte in maiuscolo per garantire il match tra Budget e Reale"""
     return series.astype(str).str.strip().str.upper()
 
-# Mappa mesi per conversioni
+# Mappa Mesi (Questi sono i nomi che l'App userà per cercare le colonne nel file)
 MAP_MESI = {1:'Gen', 2:'Feb', 3:'Mar', 4:'Apr', 5:'Mag', 6:'Giu', 7:'Lug', 8:'Ago', 9:'Set', 10:'Ott', 11:'Nov', 12:'Dic'}
 
-# Mappa Keyword completa
 MAPPA_KEYWORD = {
     "lidl": "USCITE/PRANZO", "conad": "USCITE/PRANZO", "esselunga": "USCITE/PRANZO",
     "coop": "USCITE/PRANZO", "carrefour": "USCITE/PRANZO", "eurospin": "USCITE/PRANZO",
@@ -34,15 +32,14 @@ MAPPA_KEYWORD = {
 }
 
 # ==============================================================================
-# 2. CONNESSIONE E CARICAMENTO DATI
+# 2. CARICAMENTO DATI
 # ==============================================================================
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
-    st.error(f"Errore critico di connessione: {e}")
-    st.stop()
+    st.error(f"Errore connessione: {e}"); st.stop()
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=0) # TTL=0 obbliga a rileggere il file a ogni modifica
 def get_categories():
     try:
         df_cat = conn.read(worksheet="2026", usecols=[0, 2], header=None)
@@ -56,126 +53,88 @@ def get_categories():
 CAT_ENTRATE, CAT_USCITE = get_categories()
 LISTA_TUTTE = sorted(list(set(CAT_ENTRATE + CAT_USCITE)))
 
-@st.cache_data(ttl=0) # Cache disabilitata per vedere subito modifiche al file
+@st.cache_data(ttl=0)
 def get_budget_data():
     try:
         df_bud = conn.read(worksheet="DB_BUDGET", usecols=list(range(14))).fillna(0)
-        # 1. Pulisce i nomi delle colonne (es. "Gen " -> "Gen")
-        df_bud.columns = [str(c).strip() for c in df_bud.columns]
         
-        # 2. Crea colonna chiave pulita per il match
+        # 1. PULIZIA HEADER: Rimuove spazi dai nomi delle colonne (es. "Gen " -> "Gen")
+        df_bud.columns = df_bud.columns.astype(str).str.strip()
+        
+        # 2. PULIZIA CATEGORIE: Crea chiave di unione
         if "Categoria" in df_bud.columns:
             df_bud["Categoria_Match"] = clean_key(df_bud["Categoria"])
         
-        # 3. Converte le colonne dei mesi in numeri puri (rimuove € e formatta)
+        # 3. PULIZIA NUMERI: Rimuove € e converte in float
         for col in df_bud.columns:
             if col not in ["Categoria", "Tipo", "Categoria_Match"]:
+                # Rimuove simbolo euro, punti migliaia e converte virgola in punto
                 df_bud[col] = df_bud[col].astype(str).str.replace('€','').str.replace('.','').str.replace(',','.')
                 df_bud[col] = pd.to_numeric(df_bud[col], errors='coerce').fillna(0)
         return df_bud
     except: return pd.DataFrame()
 
 # ==============================================================================
-# 3. LOGICA DI ELABORAZIONE
+# 3. LOGICHE UTILS
 # ==============================================================================
-def trova_categoria_smart(descrizione, lista_categorie_disponibili):
+def trova_categoria_smart(descrizione, lista_cats):
     desc_lower = descrizione.lower()
-    # Match esatto keyword
-    for parola_chiave, target_categoria in MAPPA_KEYWORD.items():
-        if parola_chiave in desc_lower:
-            for cat in lista_categorie_disponibili:
-                if target_categoria.lower() in cat.lower(): return cat
-    # Match parziale nome categoria
-    for cat in lista_categorie_disponibili:
-        if cat.lower() in desc_lower: return cat
+    for k, v in MAPPA_KEYWORD.items():
+        if k in desc_lower:
+            for c in lista_cats:
+                if v.lower() in c.lower(): return c
+    for c in lista_cats:
+        if c.lower() in desc_lower: return c
     return "DA VERIFICARE"
 
 def scarica_spese_da_gmail():
-    nuove_transazioni, mail_scartate = [], []
-    if "email" not in st.secrets:
-        st.error("Configurazione email mancante nei secrets."); return pd.DataFrame(), pd.DataFrame()
-    
-    user = st.secrets["email"]["user"]
-    pwd = st.secrets["email"]["password"]
-    server = st.secrets["email"]["imap_server"]
-    
+    nuove, scartate = [], []
+    if "email" not in st.secrets: return pd.DataFrame(), pd.DataFrame()
     try:
-        with MailBox(server).login(user, pwd) as mailbox:
+        with MailBox(st.secrets["email"]["imap_server"]).login(st.secrets["email"]["user"], st.secrets["email"]["password"]) as mailbox:
             for msg in mailbox.fetch(limit=50, reverse=True):
-                soggetto = msg.subject
-                corpo_clean = " ".join((msg.text or msg.html).split())
-                
-                if "widiba" not in corpo_clean.lower() and "widiba" not in soggetto.lower(): continue
-
-                importo, tipo, descrizione, trovato = 0.0, "Uscita", "Transazione Generica", False
-                
-                # Regex potenti
-                regex_uscite = [
-                    r'(?:pagamento|prelievo|addebito|bonifico).*?di\s+([\d.,]+)\s+euro.*?(?:presso|per|a favore di|su)\s+(.*?)(?:\.|$)',
-                    r'ha\s+prelevato\s+([\d.,]+)\s+euro.*?(?:presso)\s+(.*?)(?:\.|$)'
-                ]
-                regex_entrate = [
-                    r'(?:accredito|bonifico).*?di\s+([\d.,]+)\s+euro.*?(?:per|da|a favore di)\s+(.*?)(?:\.|$)',
-                    r'hai\s+ricevuto\s+([\d.,]+)\s+euro\s+da\s+(.*?)(?:\.|$)'
-                ]
-
-                # Analisi Uscite
-                for rx in regex_uscite:
-                    match = re.search(rx, corpo_clean, re.IGNORECASE)
-                    if match:
-                        importo = float(match.group(1).replace('.', '').replace(',', '.'))
-                        descrizione = match.group(2).strip()
-                        tipo = "Uscita"
-                        trovato = True; break 
-                
-                # Analisi Entrate
+                if "widiba" not in msg.subject.lower() and "widiba" not in msg.text.lower(): continue
+                trovato = False
+                # Regex
+                rx_out = [r'di\s+([\d.,]+)\s+euro.*?(?:presso|per|a)\s+(.*?)(?:\.|$)', r'prelevato\s+([\d.,]+)\s+euro.*?(?:presso)\s+(.*?)(?:\.|$)']
+                rx_in = [r'di\s+([\d.,]+)\s+euro.*?(?:da|a favore)\s+(.*?)(?:\.|$)', r'ricevuto\s+([\d.,]+)\s+euro\s+da\s+(.*?)(?:\.|$)']
+                body = " ".join((msg.text or msg.html).split())
+                for r in rx_out:
+                    m = re.search(r, body, re.IGNORECASE)
+                    if m:
+                        imp, desc = float(m.group(1).replace('.','').replace(',','.')), m.group(2).strip()
+                        nuove.append({"Data": msg.date.strftime("%Y-%m-%d"), "Descrizione": desc, "Importo": imp, "Tipo": "Uscita", "Categoria": trova_categoria_smart(desc, CAT_USCITE), "Mese": msg.date.strftime('%b-%y'), "Firma": f"{msg.date.strftime('%Y%m%d')}-{imp}"})
+                        trovato = True; break
                 if not trovato:
-                    for rx in regex_entrate:
-                        match = re.search(rx, corpo_clean, re.IGNORECASE)
-                        if match:
-                            importo = float(match.group(1).replace('.', '').replace(',', '.'))
-                            descrizione = match.group(2).strip()
-                            tipo = "Entrata"
+                    for r in rx_in:
+                        m = re.search(r, body, re.IGNORECASE)
+                        if m:
+                            imp, desc = float(m.group(1).replace('.','').replace(',','.')), m.group(2).strip()
+                            nuove.append({"Data": msg.date.strftime("%Y-%m-%d"), "Descrizione": desc, "Importo": imp, "Tipo": "Entrata", "Categoria": trova_categoria_smart(desc, CAT_ENTRATE), "Mese": msg.date.strftime('%b-%y'), "Firma": f"{msg.date.strftime('%Y%m%d')}-{imp}"})
                             trovato = True; break
+                if not trovato:
+                    scartate.append({"Data": msg.date.strftime("%Y-%m-%d"), "Descrizione": msg.subject, "Importo": 0.0, "Tipo": "Uscita", "Categoria": "DA VERIFICARE", "Mese": msg.date.strftime('%b-%y'), "Firma": f"ERR-{uuid.uuid4().hex[:6]}"})
+    except Exception as e: st.error(f"Errore mail: {e}")
+    return pd.DataFrame(nuove), pd.DataFrame(scartate)
 
-                if trovato:
-                    cat_sugg = trova_categoria_smart(descrizione, CAT_USCITE if tipo=="Uscita" else CAT_ENTRATE)
-                    nuove_transazioni.append({
-                        "Data": msg.date.strftime("%Y-%m-%d"),
-                        "Descrizione": descrizione, "Importo": importo,
-                        "Tipo": tipo, "Categoria": cat_sugg,
-                        "Mese": msg.date.strftime('%b-%y'),
-                        "Firma": f"{msg.date.strftime('%Y%m%d')}-{importo}-{descrizione[:10]}"
-                    })
-                else:
-                    mail_scartate.append({
-                        "Data": msg.date.strftime("%Y-%m-%d"), "Descrizione": soggetto, 
-                        "Importo": 0.0, "Tipo": "Uscita", "Categoria": "DA VERIFICARE", 
-                        "Mese": msg.date.strftime('%b-%y'), "Firma": f"ERR-{uuid.uuid4().hex[:6]}"
-                    })
-    except Exception as e: st.error(f"Errore lettura mail: {e}")
-    return pd.DataFrame(nuove_transazioni), pd.DataFrame(mail_scartate)
-
-def crea_prospetto(df, index_col, columns_col):
+def crea_prospetto(df, idx, cols):
     if df.empty: return pd.DataFrame()
-    pivot = df.pivot_table(index=index_col, columns=columns_col, values='Importo', aggfunc='sum', fill_value=0)
-    pivot["TOTALE"] = pivot.sum(axis=1)
-    pivot = pivot.sort_values("TOTALE", ascending=False)
-    pivot.loc["TOTALE"] = pivot.sum()
-    return pivot
+    p = df.pivot_table(index=idx, columns=cols, values='Importo', aggfunc='sum', fill_value=0)
+    p["TOTALE"] = p.sum(axis=1); p = p.sort_values("TOTALE", ascending=False)
+    p.loc["TOTALE"] = p.sum()
+    return p
 
-# Funzioni Stile Tabelle
-def style_delta_uscite(val): return f'color: {"green" if val >= 0 else "red"}; font-weight: bold'
-def style_delta_entrate(val): return f'color: {"green" if val >= 0 else "red"}; font-weight: bold'
+# Stili
+def style_uscite(val): return f'color: {"green" if val >= 0 else "red"}; font-weight: bold'
+def style_entrate(val): return f'color: {"green" if val >= 0 else "red"}; font-weight: bold'
 
 # ==============================================================================
-# 4. CARICAMENTO DB E SESSION STATE
+# 4. CARICAMENTO DB
 # ==============================================================================
 try:
     df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(7)), ttl=0)
     df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
     df_cloud["Importo"] = pd.to_numeric(df_cloud["Importo"], errors='coerce').fillna(0)
-    # CREIAMO LA CHIAVE DI MATCHING ANCHE QUI
     if "Categoria" in df_cloud.columns:
         df_cloud["Categoria_Match"] = clean_key(df_cloud["Categoria"])
 except:
@@ -185,200 +144,139 @@ if "df_mail_found" not in st.session_state: st.session_state["df_mail_found"] = 
 if "df_mail_discarded" not in st.session_state: st.session_state["df_mail_discarded"] = pd.DataFrame()
 if "df_manual_entry" not in st.session_state: st.session_state["df_manual_entry"] = pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"])
 
-# ==============================================================================
-# 5. UI PRINCIPALE - TABS
-# ==============================================================================
 tab1, tab2, tab3 = st.tabs(["📥 NUOVE & IMPORTA", "📊 REPORT & BUDGET", "🗂 STORICO & MODIFICA"])
 
-# --- TAB 1: IMPORTAZIONE ---
+# --- TAB 1 ---
 with tab1:
-    col_search, col_act = st.columns([1, 4])
+    col_search, col_actions = st.columns([1, 4])
     with col_search:
-        if st.button("🔎 Cerca Mail", type="primary"):
-            with st.spinner("Analisi in corso..."):
+        if st.button("🔎 Cerca Nuove Mail", type="primary"):
+            with st.spinner("Analisi mail in corso..."):
                 df_m, df_s = scarica_spese_da_gmail()
                 st.session_state["df_mail_found"] = df_m
                 st.session_state["df_mail_discarded"] = df_s
-    
     st.divider()
-
     if not st.session_state["df_mail_discarded"].empty:
-        with st.expander(f"⚠️ {len(st.session_state['df_mail_discarded'])} Mail Scartate (Da verificare)", expanded=True):
+        with st.expander(f"⚠️ {len(st.session_state['df_mail_discarded'])} Mail Scartate", expanded=True):
             st.dataframe(st.session_state["df_mail_discarded"][["Data", "Descrizione"]], use_container_width=True)
-            if st.button("⬇️ Recupera in Manuale"):
+            if st.button("⬇️ Recupera Manualmente"):
                 st.session_state["df_manual_entry"] = pd.concat([st.session_state["df_manual_entry"], st.session_state["df_mail_discarded"]], ignore_index=True)
                 st.session_state["df_mail_discarded"] = pd.DataFrame(); st.rerun()
-
     df_mail = st.session_state["df_mail_found"]
     if not df_mail.empty:
-        firme_esistenti = df_cloud["Firma"].astype(str).tolist() if "Firma" in df_cloud.columns else []
-        df_clean = df_mail[~df_mail["Firma"].astype(str).isin(firme_esistenti)]
-        
-        st.subheader("💰 Nuove Transazioni Identificate")
-        df_mail_edit = st.data_editor(
-            df_clean,
-            column_config={
-                "Categoria": st.column_config.SelectboxColumn(options=LISTA_TUTTE),
-                "Data": st.column_config.DateColumn(format="YYYY-MM-DD")
-            }, use_container_width=True
-        )
-
-    st.subheader("✍️ Inserimento Manuale")
-    if st.session_state["df_manual_entry"].empty:
-        st.session_state["df_manual_entry"] = pd.DataFrame([{"Data": datetime.now(), "Descrizione": "", "Importo": 0.0, "Tipo": "Uscita", "Categoria": "DA VERIFICARE"}])
-    
-    df_man_edit = st.data_editor(
-        st.session_state["df_manual_entry"],
-        num_rows="dynamic",
-        column_config={
-            "Categoria": st.column_config.SelectboxColumn(options=LISTA_TUTTE),
-            "Tipo": st.column_config.SelectboxColumn(options=["Uscita", "Entrata"]),
-            "Data": st.column_config.DateColumn(format="YYYY-MM-DD"),
-            "Importo": st.column_config.NumberColumn(format="%.2f €")
-        }, use_container_width=True
-    )
-
-    if st.button("💾 SALVA TUTTO NEL DATABASE", type="primary", use_container_width=True):
+        firme = df_cloud["Firma"].astype(str).tolist() if "Firma" in df_cloud.columns else []
+        df_clean = df_mail[~df_mail["Firma"].astype(str).isin(firme)]
+        st.subheader("💰 Nuove Transazioni")
+        df_mail_edit = st.data_editor(df_clean, column_config={"Categoria": st.column_config.SelectboxColumn(options=LISTA_TUTTE)}, use_container_width=True)
+    st.subheader("✍️ Manuale"); df_man_edit = st.data_editor(st.session_state["df_manual_entry"], num_rows="dynamic", column_config={"Categoria": st.column_config.SelectboxColumn(options=LISTA_TUTTE)}, use_container_width=True)
+    if st.button("💾 SALVA TUTTO", type="primary"):
         da_salvare = [df_cloud.drop(columns=["Categoria_Match"], errors="ignore")]
         if not df_mail.empty: da_salvare.append(df_mail_edit)
-        
-        df_valid_man = df_man_edit[df_man_edit["Importo"] > 0].copy()
-        if not df_valid_man.empty:
-            df_valid_man["Data"] = pd.to_datetime(df_valid_man["Data"])
-            df_valid_man["Mese"] = df_valid_man["Data"].dt.strftime('%b-%y')
-            df_valid_man["Firma"] = [f"MAN-{uuid.uuid4().hex[:6]}" for _ in range(len(df_valid_man))]
-            da_salvare.append(df_valid_man)
-        
-        final_df = pd.concat(da_salvare, ignore_index=True)
-        final_df["Data"] = pd.to_datetime(final_df["Data"]).dt.strftime("%Y-%m-%d")
-        conn.update(worksheet="DB_TRANSAZIONI", data=final_df)
-        st.session_state["df_mail_found"] = pd.DataFrame()
-        st.session_state["df_manual_entry"] = pd.DataFrame()
-        st.balloons(); st.success("Salvataggio Completato!"); st.rerun()
+        valid = df_man_edit[df_man_edit["Importo"]>0].copy()
+        if not valid.empty:
+            valid["Data"] = pd.to_datetime(valid["Data"]); valid["Mese"] = valid["Data"].dt.strftime('%b-%y')
+            valid["Firma"] = [f"MAN-{uuid.uuid4().hex[:6]}" for _ in range(len(valid))]
+            da_salvare.append(valid)
+        final = pd.concat(da_salvare, ignore_index=True)
+        final["Data"] = pd.to_datetime(final["Data"]).dt.strftime("%Y-%m-%d")
+        conn.update(worksheet="DB_TRANSAZIONI", data=final)
+        st.session_state["df_mail_found"] = pd.DataFrame(); st.session_state["df_manual_entry"] = pd.DataFrame(); st.balloons(); st.rerun()
 
 # ==============================================================================
-# TAB 2: REPORT & BUDGET (NUOVA LOGICA BUDGET-CENTRICA)
+# TAB 2: DASHBOARD & BUDGET (CON DIAGNOSTICA)
 # ==============================================================================
 with tab2:
-    # 1. CARICAMENTO PRIMARIO DEL BUDGET
     df_budget = get_budget_data()
     
-    # Filtri Temporali
-    col_f1, col_f2, col_f3 = st.columns(3)
-    with col_f1: 
-        anno_sel = st.selectbox("📅 Anno", sorted(df_cloud["Data"].dt.year.unique(), reverse=True) if not df_cloud.empty else [2026])
+    # Filtri
+    c1, c2, c3 = st.columns(3)
+    with c1: anno_sel = st.selectbox("📅 Anno", sorted(df_cloud["Data"].dt.year.unique(), reverse=True) if not df_cloud.empty else [2026])
+    with c2: periodo_sel = st.selectbox("📊 Periodo", ["Mensile", "Annuale"])
+    mese_sel_nome = "Gen"
+    if periodo_sel == "Mensile":
+        with c3: mese_sel_nome = st.selectbox("📆 Mese", list(MAP_MESI.values()), index=datetime.now().month-1)
     
-    # Selettore Mese (Per ora Mensile come richiesto)
-    with col_f2:
-        mese_sel_nome = st.selectbox("📆 Mese", list(MAP_MESI.values()), index=datetime.now().month-1)
-    
-    mese_sel_num = [k for k,v in MAP_MESI.items() if v==mese_sel_nome][0]
-
-    # --- DATI BUDGET DEL MESE ---
-    if not df_budget.empty and mese_sel_nome in df_budget.columns:
-        # Costruisco il dataframe del preventivo per il mese selezionato
-        # Includo Categoria_Match per il futuro merge
-        df_preventivo = df_budget[["Categoria", "Categoria_Match", "Tipo", mese_sel_nome]].copy()
-        df_preventivo = df_preventivo.rename(columns={mese_sel_nome: "Budget"})
+    # --------------------------------------------------------------------------
+    # 🛑 PANNELLO DIAGNOSTICO - FONDAMENTALE PER CAPIRE PERCHÉ NON CARICA
+    # --------------------------------------------------------------------------
+    with st.expander("🕵️‍♂️ DIAGNOSTICA BUDGET (Apri qui se i dati sono a zero)", expanded=True):
+        st.write(f"**1. Mese cercato:** '{mese_sel_nome}'")
+        st.write(f"**2. Colonne trovate nel tuo file Excel:** {list(df_budget.columns)}")
         
-        # Gestione Saldo Iniziale (visibile solo a Gennaio)
-        if mese_sel_nome != "Gen":
-            df_preventivo = df_preventivo[df_preventivo["Categoria"] != "SALDO INIZIALE"]
-
-        # --- KPI SOLO BUDGET (CRUSCOTTO PREVENTIVO) ---
-        prev_entrate = df_preventivo[df_preventivo["Tipo"]=="Entrata"]["Budget"].sum()
-        prev_uscite = df_preventivo[df_preventivo["Tipo"]=="Uscita"]["Budget"].sum()
-        prev_saldo = prev_entrate - prev_uscite
-
-        st.markdown(f"### 📊 Preventivo: {mese_sel_nome} {anno_sel}")
-        b1, b2, b3 = st.columns(3)
-        b1.metric("Entrate Previste", f"{prev_entrate:,.2f} €")
-        b2.metric("Uscite Previste", f"{prev_uscite:,.2f} €")
-        b3.metric("Saldo Previsto", f"{prev_saldo:,.2f} €")
-        
-        st.divider()
-
-        # --- RECUPERO DATI REALI (SE ESISTONO) ---
-        df_reale_anno = df_cloud[df_cloud["Data"].dt.year == anno_sel]
-        df_reale_mese = df_reale_anno[df_reale_anno["Data"].dt.month == mese_sel_num]
-        
-        # Raggruppo il reale
-        if not df_reale_mese.empty:
-            consuntivo = df_reale_mese.groupby(["Categoria_Match", "Tipo"])["Importo"].sum().reset_index().rename(columns={"Importo": "Reale"})
+        if mese_sel_nome in df_budget.columns:
+            st.success(f"✅ La colonna '{mese_sel_nome}' ESISTE!")
+            valori_mese = df_budget[mese_sel_nome].sum()
+            st.info(f"Totale Budget letto per {mese_sel_nome}: {valori_mese:.2f} €. (Se è 0, controlla che nel file Excel i numeri non abbiano simboli strani o siano testo).")
+            st.dataframe(df_budget[["Categoria", mese_sel_nome]].head())
         else:
-            consuntivo = pd.DataFrame(columns=["Categoria_Match", "Tipo", "Reale"])
+            st.error(f"❌ La colonna '{mese_sel_nome}' NON ESISTE. Rinominata nel file Excel esattamente come vedi nella lista sopra (punto 2).")
 
-        # --- MERGE BUDGET-CENTRICO ---
-        # Partiamo dal df_preventivo (Left) e uniamo il consuntivo (Right)
-        # Così le righe del budget restano sempre, anche se il reale è vuoto.
-        df_finale = pd.merge(df_preventivo, consuntivo[["Categoria_Match", "Reale"]], on="Categoria_Match", how="left").fillna(0)
-        
-        # Calcolo Delta
-        df_finale["Budget"] = pd.to_numeric(df_finale["Budget"])
-        df_finale["Reale"] = pd.to_numeric(df_finale["Reale"])
-        df_finale["Delta"] = df_finale["Budget"] - df_finale["Reale"]
+    # Logica Dati
+    df_anno = df_cloud[df_cloud["Data"].dt.year == anno_sel].copy()
+    if periodo_sel == "Mensile":
+        mese_num = [k for k,v in MAP_MESI.items() if v==mese_sel_nome][0]
+        df_target = df_anno[df_anno["Data"].dt.month == mese_num]
+    else: df_target = df_anno.copy()
 
-        # --- KPI CONFRONTO (REALE vs BUDGET) ---
-        real_uscite_tot = df_finale[df_finale["Tipo"]=="Uscita"]["Reale"].sum()
-        delta_tot_uscite = prev_uscite - real_uscite_tot
-        
-        st.markdown(f"### 📉 Consuntivo vs Budget")
-        c1, c2 = st.columns(2)
-        c1.metric("Spese Effettive", f"{real_uscite_tot:,.2f} €")
-        c2.metric("Rimanente da Spendere", f"{delta_tot_uscite:,.2f} €", delta=f"{delta_tot_uscite:,.2f} €")
-
-        # --- TABELLA DETTAGLIO ---
-        col_grafico, col_tabella = st.columns([1, 1.5])
-        
-        # Grafico distribuzione budget
-        df_uscite_view = df_finale[df_finale["Tipo"]=="Uscita"].copy()
-        
-        with col_grafico:
-            # Mostriamo la torta di come era PREVISTO spendere i soldi
-            st.caption("Distribuzione Budget")
-            if prev_uscite > 0:
-                fig = px.pie(df_uscite_view, values='Budget', names='Categoria', hole=0.4)
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Nessun budget uscite definito.")
-
-        with col_tabella:
-            st.caption("Dettaglio Voci")
-            # Ordiniamo per Budget decrescente (così vedi prima le voci grosse)
-            st.dataframe(
-                df_uscite_view[["Categoria", "Budget", "Reale", "Delta"]]
-                .sort_values("Budget", ascending=False)
-                .style.format("{:.2f} €", subset=["Budget", "Reale", "Delta"])
-                .map(style_delta_uscite, subset=["Delta"]),
-                use_container_width=True, hide_index=True
-            )
-            
-    else:
-        st.warning(f"Nessun dato di Budget trovato per il mese: {mese_sel_nome}. Controlla il foglio DB_BUDGET.")
-
-    # --- STORICI ---
+    # KPI Generali
+    k1, k2, k3 = st.columns(3)
+    e_tot, u_tot = df_anno[df_anno["Tipo"]=="Entrata"]["Importo"].sum(), df_anno[df_anno["Tipo"]=="Uscita"]["Importo"].sum()
+    k1.metric("Entrate Anno", f"{e_tot:,.2f} €"); k2.metric("Uscite Anno", f"{u_tot:,.2f} €"); k3.metric("Saldo", f"{(e_tot-u_tot):,.2f} €")
     st.divider()
-    st.subheader("📅 Storico Mensile")
-    df_anno_u = df_cloud[(df_cloud["Data"].dt.year == anno_sel) & (df_cloud["Tipo"]=="Uscita")]
-    if not df_anno_u.empty:
-        df_anno_u["MeseNum"] = df_anno_u["Data"].dt.month
-        piv = crea_prospetto(df_anno_u, "Categoria", "MeseNum").rename(columns=MAP_MESI)
+
+    # PREPARAZIONE BUDGET (LEFT) E REALE (RIGHT)
+    bud_view = pd.DataFrame()
+    
+    if not df_budget.empty:
+        # Costruzione Budget
+        if periodo_sel == "Mensile" and mese_sel_nome in df_budget.columns:
+            bud_view = df_budget[["Categoria", "Categoria_Match", "Tipo", mese_sel_nome]].rename(columns={mese_sel_nome: "Budget"})
+            if mese_sel_nome != "Gen": bud_view = bud_view[bud_view["Categoria"] != "SALDO INIZIALE"]
+        elif periodo_sel == "Annuale":
+            col_m = [c for c in df_budget.columns if c in MAP_MESI.values()]
+            df_budget["Budget"] = df_budget[col_m].sum(axis=1)
+            bud_view = df_budget[["Categoria", "Categoria_Match", "Tipo", "Budget"]]
+        
+        # Costruzione Reale
+        if not df_target.empty:
+            cons = df_target.groupby(["Categoria_Match", "Tipo"])["Importo"].sum().reset_index().rename(columns={"Importo": "Reale"})
+        else: cons = pd.DataFrame(columns=["Categoria_Match", "Tipo", "Reale"])
+
+        # MERGE BUDGET-CENTRICO (Le righe del budget vincono)
+        if not bud_view.empty:
+            final = pd.merge(bud_view, cons[["Categoria_Match", "Reale"]], on="Categoria_Match", how="left").fillna(0)
+            final["Delta"] = final["Budget"] - final["Reale"]
+            
+            # KPI Periodo
+            bp, rp = final[final["Tipo"]=="Uscita"]["Budget"].sum(), final[final["Tipo"]=="Uscita"]["Reale"].sum()
+            st.metric(f"Rimanente {periodo_sel}", f"{(bp-rp):,.2f} €", delta=f"{(bp-rp):,.2f} €")
+
+            # Tabelle e Grafici
+            cg, ct = st.columns([1, 1.5])
+            out = final[final["Tipo"]=="Uscita"].copy()
+            if not out.empty:
+                out["Delta"] = out["Budget"] - out["Reale"]
+                with cg: 
+                    if out["Reale"].sum() > 0: st.plotly_chart(px.pie(out, values='Reale', names='Categoria', hole=0.4), use_container_width=True)
+                with ct:
+                    st.markdown("### 🔴 Uscite vs Budget")
+                    st.dataframe(out[["Categoria", "Budget", "Reale", "Delta"]].sort_values("Budget", ascending=False).style.format("{:.2f} €", subset=["Budget", "Reale", "Delta"]).map(style_uscite, subset=["Delta"]), use_container_width=True, hide_index=True)
+            
+            inc = final[final["Tipo"]=="Entrata"].copy()
+            if not inc.empty:
+                inc["Delta"] = inc["Reale"] - inc["Budget"]
+                st.markdown("### 🟢 Entrate vs Budget")
+                st.dataframe(inc[["Categoria", "Budget", "Reale", "Delta"]].style.format("{:.2f} €", subset=["Budget", "Reale", "Delta"]).map(style_entrate, subset=["Delta"]), use_container_width=True, hide_index=True)
+        else:
+            st.warning("Budget non disponibile per il periodo selezionato.")
+
+    st.divider(); st.subheader("📅 Storico")
+    if not df_anno.empty:
+        piv = crea_prospetto(df_anno[df_anno["Tipo"]=="Uscita"], "Categoria", "MeseNum").rename(columns=MAP_MESI)
         st.dataframe(piv.style.format("{:.2f} €").background_gradient(cmap="Reds", axis=None), use_container_width=True)
 
-# ==============================================================================
-# TAB 3: MODIFICA STORICO
-# ==============================================================================
 with tab3:
-    st.markdown("### 🗂 Modifica Database Completo")
-    df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
-    # Nascondo la colonna tecnica Categoria_Match all'utente
-    ed_full = st.data_editor(
-        df_cloud.drop(columns=["Categoria_Match"], errors="ignore"), 
-        num_rows="dynamic", height=600, use_container_width=True
-    )
-    
-    if st.button("AGGIORNA DB COMPLETO", type="primary"):
-        save_full = ed_full.copy()
-        save_full["Data"] = pd.to_datetime(save_full["Data"]).dt.strftime("%Y-%m-%d")
-        conn.update(worksheet="DB_TRANSAZIONI", data=save_full)
-        st.success("Database aggiornato!"); st.rerun()
+    st.markdown("### Modifica DB"); edf = st.data_editor(df_cloud.drop(columns=["Categoria_Match"], errors="ignore"), num_rows="dynamic", use_container_width=True)
+    if st.button("AGGIORNA"):
+        s = edf.copy(); s["Data"] = pd.to_datetime(s["Data"]).dt.strftime("%Y-%m-%d")
+        conn.update(worksheet="DB_TRANSAZIONI", data=s); st.success("OK!"); st.rerun()
