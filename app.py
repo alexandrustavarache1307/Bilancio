@@ -30,7 +30,7 @@ MAPPA_KEYWORD = {
 }
 
 # ==============================================================================
-# 2. CONNESSIONE AI FOGLI GOOGLE
+# 2. CONNESSIONE
 # ==============================================================================
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
@@ -38,7 +38,7 @@ except Exception as e:
     st.error("Errore connessione. Controlla i secrets!")
     st.stop()
 
-# --- CARICAMENTO CATEGORIE (CACHE 60 SECONDI) ---
+# --- CARICAMENTO CATEGORIE ---
 @st.cache_data(ttl=60)
 def get_categories():
     try:
@@ -59,25 +59,23 @@ def get_categories():
 CAT_ENTRATE, CAT_USCITE = get_categories()
 LISTA_TUTTE = sorted(list(set(CAT_ENTRATE + CAT_USCITE)))
 
-# ==============================================================================
-# 3. CARICAMENTO BUDGET (VERSIONE ROBUSTA 4 COLONNE)
-# ==============================================================================
+# --- CARICAMENTO BUDGET (VERSIONE ROBUSTA E FIXATA) ---
 @st.cache_data(ttl=0) 
 def get_budget_data():
     try:
-        # Legge solo le prime 4 colonne: A=Mese, B=Categoria, C=Tipo, D=Importo
+        # Legge solo le prime 4 colonne
         df_bud = conn.read(worksheet="DB_BUDGET", usecols=list(range(4))).fillna(0)
         
-        # Assegnazione Nomi Colonne
+        # Rinomina colonne standard
         if len(df_bud.columns) >= 4:
             df_bud.columns = ["Mese", "Categoria", "Tipo", "Importo"]
         
-        # Pulizia base spazi (Trim)
+        # Pulizia base spazi
         for col in ["Mese", "Categoria", "Tipo"]:
             if col in df_bud.columns:
                 df_bud[col] = df_bud[col].astype(str).str.strip()
 
-        # --- FUNZIONE INTERNA: NORMALIZZAZIONE MESE ---
+        # --- 1. NORMALIZZAZIONE MESE ---
         def normalizza_mese(val):
             val = str(val).strip().lower()
             if val.startswith('gen') or val in ['1', '01']: return 'Gen'
@@ -97,7 +95,7 @@ def get_budget_data():
         if "Mese" in df_bud.columns:
             df_bud["Mese"] = df_bud["Mese"].apply(normalizza_mese)
 
-        # --- FUNZIONE INTERNA: NORMALIZZAZIONE TIPO ---
+        # --- 2. NORMALIZZAZIONE TIPO ---
         def normalizza_tipo(val):
             val = str(val).strip().lower()
             if 'usc' in val or 'spes' in val: return 'Uscita'
@@ -107,18 +105,13 @@ def get_budget_data():
         if "Tipo" in df_bud.columns:
             df_bud["Tipo"] = df_bud["Tipo"].apply(normalizza_tipo)
             
-        # --- FUNZIONE INTERNA: FIX IMPORTI (VIRGOLE/PUNTI) ---
+        # --- 3. FIX IMPORTI ---
         if "Importo" in df_bud.columns:
             def pulisci_numero(val):
                 s = str(val).strip().replace('€', '')
-                # Se c'è punto e virgola (es: 1.000,50)
-                if '.' in s and ',' in s: 
-                    s = s.replace('.', '').replace(',', '.')
-                # Se c'è solo virgola (es: 100,50)
-                elif ',' in s: 
-                    s = s.replace(',', '.')
+                if '.' in s and ',' in s: s = s.replace('.', '').replace(',', '.')
+                elif ',' in s: s = s.replace(',', '.')
                 return s
-            
             df_bud["Importo"] = df_bud["Importo"].apply(pulisci_numero)
             df_bud["Importo"] = pd.to_numeric(df_bud["Importo"], errors='coerce').fillna(0)
         
@@ -126,22 +119,15 @@ def get_budget_data():
     except:
         return pd.DataFrame()
 
-# ==============================================================================
-# 4. FUNZIONI DI UTILITÀ (MAIL, GRAFICI, LOGICA)
-# ==============================================================================
-
+# --- UTILS E LOGICA ---
 def trova_categoria_smart(descrizione, lista_categorie_disponibili):
     desc_lower = descrizione.lower()
-    # 1. Cerca nelle Keyword
     for parola_chiave, target_categoria in MAPPA_KEYWORD.items():
         if parola_chiave in desc_lower:
             for cat in lista_categorie_disponibili:
-                if target_categoria.lower() in cat.lower():
-                    return cat
-    # 2. Cerca corrispondenza parziale nel nome
+                if target_categoria.lower() in cat.lower(): return cat
     for cat in lista_categorie_disponibili:
-        if cat.lower() in desc_lower:
-            return cat
+        if cat.lower() in desc_lower: return cat
     return "DA VERIFICARE"
 
 def scarica_spese_da_gmail():
@@ -236,8 +222,8 @@ def scarica_spese_da_gmail():
         
     return pd.DataFrame(nuove_transazioni), pd.DataFrame(mail_scartate)
 
+# --- FUNZIONI DI STILE E GRAFICA ---
 def style_delta(val, inverse=False):
-    """Restituisce lo stile CSS per i numeri positivi/negativi"""
     if inverse:
         color = 'green' if val >= 0 else 'red'
     else:
@@ -245,7 +231,7 @@ def style_delta(val, inverse=False):
     return f'color: {color}; font-weight: bold'
 
 def genera_grafico_avanzato(df, tipo_grafico, col_valore, col_label, titolo, color_sequence):
-    """Genera il grafico Plotly in base al selettore dell'utente"""
+    """Genera il grafico in base al selettore dell'utente"""
     if df.empty or df[col_valore].sum() == 0:
         return None
     
@@ -267,32 +253,27 @@ def genera_grafico_avanzato(df, tipo_grafico, col_valore, col_label, titolo, col
     return fig
 
 # ==============================================================================
-# 5. CARICAMENTO DATI INIZIALE
+# MAIN APP
 # ==============================================================================
 st.title("☁️ Piano Pluriennale 2026")
 
+# Load Data
 try:
     df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(7)), ttl=0)
     df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
     df_cloud["Importo"] = pd.to_numeric(df_cloud["Importo"], errors='coerce').fillna(0)
-    if "Categoria" in df_cloud.columns:
-        df_cloud["Categoria"] = df_cloud["Categoria"].astype(str).str.strip()
-except:
-    df_cloud = pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"])
+    if "Categoria" in df_cloud.columns: df_cloud["Categoria"] = df_cloud["Categoria"].astype(str).str.strip()
+except: df_cloud = pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"])
 
-# Inizializzazione Session State
 if "df_mail_found" not in st.session_state: st.session_state["df_mail_found"] = pd.DataFrame()
 if "df_mail_discarded" not in st.session_state: st.session_state["df_mail_discarded"] = pd.DataFrame()
 if "df_manual_entry" not in st.session_state: st.session_state["df_manual_entry"] = pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"])
 
-# ==============================================================================
-# 6. INTERFACCIA UTENTE (TABS)
-# ==============================================================================
 tab_bil, tab1, tab2, tab3 = st.tabs(["📑 RIEPILOGO & BILANCIO", "📥 NUOVE & IMPORTA", "📊 ANALISI GRAFICA", "🗂 STORICO & MODIFICA"])
 
-# ==============================================================================
+# ==========================================
 # TAB 1: RIEPILOGO & BILANCIO (LA NUOVA SCHERMATA)
-# ==============================================================================
+# ==========================================
 with tab_bil:
     # 1. Carichiamo i dati freschi
     df_budget_b = get_budget_data()
@@ -423,9 +404,9 @@ with tab_bil:
     st.markdown("---")
     st.markdown(f"### 💡 Risultato Netto del Periodo (Utile): **{utile_real:+,.2f} €**")
 
-# ==============================================================================
+# ==========================================
 # TAB 2: NUOVE & IMPORTA (VERSIONE ORIGINALE COMPLETA)
-# ==============================================================================
+# ==========================================
 with tab1:
     col_search, col_actions = st.columns([1, 4])
     with col_search:
@@ -446,56 +427,73 @@ with tab1:
                 st.session_state["df_mail_discarded"] = pd.DataFrame()
                 st.rerun()
 
-    df_new = st.session_state["df_mail_found"]
-    if not df_new.empty:
-        exist = df_cloud["Firma"].astype(str).tolist() if "Firma" in df_cloud.columns else []
-        df_new = df_new[~df_new["Firma"].astype(str).isin(exist)]
+    df_view_entrate = pd.DataFrame()
+    df_view_uscite = pd.DataFrame()
+    
+    if not st.session_state["df_mail_found"].empty:
+        df_clean = st.session_state["df_mail_found"]
+        if "Firma" in df_cloud.columns:
+            firme_esistenti = df_cloud["Firma"].astype(str).tolist()
+            df_clean = df_clean[~df_clean["Firma"].astype(str).isin(firme_esistenti)]
         
-        st.markdown("##### 💰 Nuove Entrate")
+        df_clean["Data"] = pd.to_datetime(df_clean["Data"], errors='coerce')
+        df_view_entrate = df_clean[df_clean["Tipo"] == "Entrata"]
+        df_view_uscite = df_clean[df_clean["Tipo"] == "Uscita"]
+
+    st.markdown("##### 💰 Nuove Entrate")
+    if not df_view_entrate.empty:
         ed_ent = st.data_editor(
-            df_new[df_new["Tipo"]=="Entrata"],
-            column_config={"Categoria": st.column_config.SelectboxColumn(options=CAT_ENTRATE)},
-            key="k_ent", use_container_width=True
-        )
-        
-        st.markdown("##### 💸 Nuove Uscite")
-        ed_usc = st.data_editor(
-            df_new[df_new["Tipo"]=="Uscita"],
-            column_config={"Categoria": st.column_config.SelectboxColumn(options=CAT_USCITE)},
-            key="k_usc", use_container_width=True
+            df_view_entrate,
+            column_config={"Categoria": st.column_config.SelectboxColumn(options=CAT_ENTRATE, required=True), "Tipo": st.column_config.Column(disabled=True), "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True), "Importo": st.column_config.NumberColumn(format="%.2f €")},
+            key="edit_entrate_mail", use_container_width=True
         )
     else:
-        ed_ent, ed_usc = pd.DataFrame(), pd.DataFrame()
-        st.info("Nessuna nuova mail trovata.")
+        ed_ent = pd.DataFrame()
+        st.info("Nessuna nuova entrata.")
+
+    st.markdown("##### 💸 Nuove Uscite")
+    if not df_view_uscite.empty:
+        ed_usc = st.data_editor(
+            df_view_uscite,
+            column_config={"Categoria": st.column_config.SelectboxColumn(options=CAT_USCITE, required=True), "Tipo": st.column_config.Column(disabled=True), "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True), "Importo": st.column_config.NumberColumn(format="%.2f €")},
+            key="edit_uscite_mail", use_container_width=True
+        )
+    else:
+        ed_usc = pd.DataFrame()
+        st.info("Nessuna nuova uscita.")
 
     st.markdown("---")
     st.markdown("##### ✍️ Manuale / Correzioni")
     if st.session_state["df_manual_entry"].empty:
-        st.session_state["df_manual_entry"] = pd.DataFrame([{"Data": datetime.now(), "Descrizione": "", "Importo": 0.0, "Tipo": "Uscita", "Categoria": "DA VERIFICARE"}])
+        st.session_state["df_manual_entry"] = pd.DataFrame([{"Data": datetime.now(), "Descrizione": "Spesa contanti", "Importo": 0.0, "Tipo": "Uscita", "Categoria": "DA VERIFICARE", "Firma": "", "Mese": ""}])
     
-    ed_man = st.data_editor(
+    st.session_state["df_manual_entry"]["Data"] = pd.to_datetime(st.session_state["df_manual_entry"]["Data"], errors='coerce')
+    edited_manual = st.data_editor(
         st.session_state["df_manual_entry"],
         num_rows="dynamic",
-        column_config={"Categoria": st.column_config.SelectboxColumn(options=sorted(CAT_USCITE + CAT_ENTRATE))},
+        column_config={"Categoria": st.column_config.SelectboxColumn(options=sorted(CAT_USCITE + CAT_ENTRATE), required=True), "Tipo": st.column_config.SelectboxColumn(options=["Uscita", "Entrata"], required=True), "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True), "Importo": st.column_config.NumberColumn(format="%.2f €")},
         key="edit_manual", use_container_width=True
     )
 
     if st.button("💾 SALVA TUTTO NEL CLOUD", type="primary", use_container_width=True):
-        save_list = []
-        if not ed_ent.empty: save_list.append(ed_ent)
-        if not ed_usc.empty: save_list.append(ed_usc)
-        if not ed_man.empty:
-            v = ed_man[ed_man["Importo"] > 0].copy()
-            if not v.empty:
-                v["Data"] = pd.to_datetime(v["Data"])
-                v["Mese"] = v["Data"].dt.strftime('%b-%y')
-                v["Firma"] = [f"MAN-{uuid.uuid4().hex[:6]}" for _ in range(len(v))]
-                save_list.append(v)
+        da_salvare = []
+        if not ed_ent.empty: da_salvare.append(ed_ent)
+        if not ed_usc.empty: da_salvare.append(ed_usc)
+        if not edited_manual.empty:
+            valid_manual = edited_manual[edited_manual["Importo"] > 0]
+            if not valid_manual.empty:
+                valid_manual["Data"] = pd.to_datetime(valid_manual["Data"])
+                valid_manual["Mese"] = valid_manual["Data"].dt.strftime('%b-%y')
+                valid_manual["Firma"] = valid_manual.apply(lambda x: x["Firma"] if x["Firma"] and str(x["Firma"]) != "nan" else f"MAN-{x['Data'].strftime('%Y%m%d')}-{uuid.uuid4().hex[:6]}", axis=1)
+                da_salvare.append(valid_manual)
         
-        if save_list:
-            fin = pd.concat([df_cloud] + save_list, ignore_index=True)
-            fin["Data"] = pd.to_datetime(fin["Data"]).dt.strftime("%Y-%m-%d")
-            conn.update(worksheet="DB_TRANSAZIONI", data=fin)
+        if da_salvare:
+            df_new_total = pd.concat(da_salvare, ignore_index=True)
+            df_final = pd.concat([df_cloud, df_new_total], ignore_index=True)
+            df_final["Data"] = pd.to_datetime(df_final["Data"])
+            df_final = df_final.sort_values("Data", ascending=False)
+            df_final["Data"] = df_final["Data"].dt.strftime("%Y-%m-%d")
+            conn.update(worksheet="DB_TRANSAZIONI", data=df_final)
             st.session_state["df_mail_found"] = pd.DataFrame()
             st.session_state["df_manual_entry"] = pd.DataFrame()
             st.session_state["df_mail_discarded"] = pd.DataFrame()
@@ -503,9 +501,9 @@ with tab1:
             st.success("✅ Tutto salvato correttamente!")
             st.rerun()
 
-# ==============================================================================
+# ==========================================
 # TAB 3: ANALISI GRAFICA (CON ESTETICA AVANZATA)
-# ==============================================================================
+# ==========================================
 with tab2:
     # Caricamento Dati
     df_budget_g = get_budget_data()
