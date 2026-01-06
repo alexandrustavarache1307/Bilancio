@@ -25,8 +25,8 @@ MAPPA_KEYWORD = {
     "bar ": "USCITE/PRANZO", "caffè": "USCITE/PRANZO", "eni": "CARBURANTE",
     "q8": "CARBURANTE", "esso": "CARBURANTE", "benzina": "CARBURANTE",
     "autostrade": "VARIE", "telepass": "VARIE", "amazon": "VARIE", "paypal": "PERSONALE",
-    "netflix": "VARIE", "spotify": "SPOTIFY", "dazn": "VARIE", "disney": "VARIE",
-    "farmacia": "VARIE", "medico": "VARIE", "ticket": "VARIE"
+    "netflix": "SVAGO", "spotify": "SVAGO", "dazn": "SVAGO", "disney": "SVAGO",
+    "farmacia": "SALUTE", "medico": "SALUTE", "ticket": "SALUTE"
 }
 
 # ==============================================================================
@@ -480,7 +480,7 @@ with tab2:
             if not out.empty:
                 fig = genera_grafico_avanzato(out, chart_type, col_valore, "Categoria", "Distribuzione Uscite", px.colors.sequential.RdBu)
                 if fig: st.plotly_chart(fig, use_container_width=True)
-                st.dataframe(out[["Categoria", "Budget", "Reale", "Delta"]].sort_values("Budget", ascending=False).style.format("{:.2f} €").map(lambda v: style_delta(v, inverse=True), subset=["Delta"]), use_container_width=True)
+                st.dataframe(out[["Categoria", "Budget", "Reale", "Delta"]].sort_values("Budget", ascending=False).style.format("{:.2f} €", subset=["Budget", "Reale", "Delta"]).map(lambda v: style_delta(v, inverse=True), subset=["Delta"]), use_container_width=True)
         
         # ENTRATE
         inc = merged[merged["Tipo"]=="Entrata"].copy()
@@ -489,7 +489,7 @@ with tab2:
             if not inc.empty:
                 fig = genera_grafico_avanzato(inc, chart_type, col_valore, "Categoria", "Distribuzione Entrate", px.colors.sequential.Teal)
                 if fig: st.plotly_chart(fig, use_container_width=True)
-                st.dataframe(inc[["Categoria", "Budget", "Reale", "Delta"]].sort_values("Reale", ascending=False).style.format("{:.2f} €").map(lambda v: style_delta(v), subset=["Delta"]), use_container_width=True)
+                st.dataframe(inc[["Categoria", "Budget", "Reale", "Delta"]].sort_values("Reale", ascending=False).style.format("{:.2f} €", subset=["Budget", "Reale", "Delta"]).map(lambda v: style_delta(v), subset=["Delta"]), use_container_width=True)
 
     elif view_mode == "📈 Trend Annuale":
         st.subheader("Andamento categorie durante l'anno")
@@ -497,7 +497,7 @@ with tab2:
         st.dataframe(piv.style.format("{:.2f} €").background_gradient(cmap="Reds", axis=None), use_container_width=True)
 
 with tab3:
-    st.markdown("### Modifica Storico"); ed = st.data_editor(df_cloud, num_rows="dynamic")
+    st.markdown("### DB Completo"); ed = st.data_editor(df_cloud, num_rows="dynamic")
     if st.button("AGGIORNA DB"):
         s = ed.copy(); s["Data"] = pd.to_datetime(s["Data"]).dt.strftime("%Y-%m-%d")
         conn.update(worksheet="DB_TRANSAZIONI", data=s); st.success("Fatto!"); st.rerun()
