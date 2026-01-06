@@ -58,13 +58,14 @@ except Exception as e:
 @st.cache_data(ttl=60)
 def get_categories():
     try:
-        # Legge colonne A e C del foglio 2026
-        df_cat = conn.read(worksheet="2026", usecols="A,C", header=None)
+        # CORREZIONE QUI: Usiamo [0, 2] invece di "A,C"
+        # 0 = Colonna A, 2 = Colonna C
+        df_cat = conn.read(worksheet="2026", usecols=[0, 2], header=None)
         
-        # LOGICA ENTRATE: Prende celle A4:A23 (indici 3:23)
+        # LOGICA ENTRATE: Prende celle A4:A23 (indici 3:23) dalla colonna 0
         cat_entrate = df_cat.iloc[3:23, 0].dropna().unique().tolist()
         
-        # LOGICA USCITE: Prende celle C3:C23 (indici 2:23)
+        # LOGICA USCITE: Prende celle C3:C23 (indici 2:23) dalla colonna 1 (perché abbiamo scaricato solo 2 colonne)
         cat_uscite = df_cat.iloc[2:23, 1].dropna().unique().tolist()
 
         # Pulisce e ordina
@@ -193,7 +194,7 @@ if "df_preview_uscite" not in st.session_state:
 # TASTO CERCA
 if st.button("🔎 CERCA E CATEGORIZZA", type="primary"):
     with st.spinner("Analisi in corso..."):
-        df_mail = scarica_spese_da_gmail() # <--- ECCO LA CORREZIONE
+        df_mail = scarica_spese_da_gmail()
         
         if not df_mail.empty:
             if "Firma" in df_cloud.columns:
