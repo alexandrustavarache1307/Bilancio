@@ -59,25 +59,36 @@ def get_categories():
 CAT_ENTRATE, CAT_USCITE = get_categories()
 LISTA_TUTTE = sorted(list(set(CAT_ENTRATE + CAT_USCITE)))
 
-# --- CARICAMENTO BUDGET (NUOVO DB VERTICALE 4 COLONNE) ---
+# --- CARICAMENTO BUDGET (INTEGRAZIONE: FIX VIRGOLE E IMPORTI) ---
 @st.cache_data(ttl=0) # Cache a 0 per aggiornamento immediato
 def get_budget_data():
     try:
         # Legge solo le prime 4 colonne: Mese, Categoria, Tipo, Importo
         df_bud = conn.read(worksheet="DB_BUDGET", usecols=list(range(4))).fillna(0)
         
-        # Rinomina per sicurezza (se ci sono almeno 4 colonne)
+        # Rinomina le colonne se ce ne sono almeno 4
         if len(df_bud.columns) >= 4:
             df_bud.columns = ["Mese", "Categoria", "Tipo", "Importo"]
         
-        # Pulizia Testo (Mese, Categoria, Tipo) - FONDAMENTALE PER IL MATCH
+        # Pulizia Testo (Mese, Categoria, Tipo)
         for col in ["Mese", "Categoria", "Tipo"]:
             if col in df_bud.columns:
                 df_bud[col] = df_bud[col].astype(str).str.strip()
             
-        # Pulizia Importo (Rimuove €, trasforma in numero)
+        # --- FIX INTELLIGENTE IMPORTI (VIRGOLE) ---
         if "Importo" in df_bud.columns:
-            df_bud["Importo"] = df_bud["Importo"].astype(str).str.replace('€','').str.replace('.','').str.replace(',','.')
+            def pulisci_numero(val):
+                # Converte in stringa, toglie spazi e simbolo €
+                s = str(val).strip().replace('€', '')
+                # Se c'è sia punto che virgola (es: 1.000,50) -> togli punto, cambia virgola in punto
+                if '.' in s and ',' in s:
+                    s = s.replace('.', '').replace(',', '.')
+                # Se c'è solo la virgola (es: 150,50) -> cambia virgola in punto
+                elif ',' in s:
+                    s = s.replace(',', '.')
+                return s
+
+            df_bud["Importo"] = df_bud["Importo"].apply(pulisci_numero)
             df_bud["Importo"] = pd.to_numeric(df_bud["Importo"], errors='coerce').fillna(0)
         
         return df_bud
@@ -216,7 +227,7 @@ try:
     df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(7)), ttl=0)
     df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
     df_cloud["Importo"] = pd.to_numeric(df_cloud["Importo"], errors='coerce').fillna(0)
-    # Pulizia Categoria DB per match sicuro (Fix "Non trova i dati")
+    # Pulizia Categoria DB per match sicuro
     if "Categoria" in df_cloud.columns:
         df_cloud["Categoria"] = df_cloud["Categoria"].astype(str).str.strip()
 except:
@@ -338,14 +349,15 @@ with tab2:
         df_budget = get_budget_data()
         
         # --------------------------------------------------------
-        # 🕵️‍♂️ BOX DIAGNOSTICO - FONDAMENTALE
+        # 🕵️‍♂️ BOX DIAGNOSTICO - FONDAMENTALE (INTEGRAZIONE: MOSTRA TUTTO)
         # --------------------------------------------------------
         with st.expander("🕵️‍♂️ DEBUG BUDGET (Clicca qui se vedi tutto a zero)", expanded=False):
             if df_budget.empty:
                 st.error("Il file DB_BUDGET sembra vuoto o illeggibile.")
             else:
-                st.write("1. Prime righe del Budget:", df_budget.head())
-                st.write("2. Mesi trovati nel file (Colonna A):", df_budget["Mese"].unique().tolist() if "Mese" in df_budget.columns else "Colonna 'Mese' non trovata")
+                st.write("Visualizzazione completa dei dati caricati:")
+                # Rimosso .head() per vedere tutte le righe
+                st.dataframe(df_budget, use_container_width=True)
 
         # Prepara dati per analisi
         df_analysis = df_cloud.copy()
