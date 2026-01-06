@@ -59,23 +59,23 @@ def get_categories():
 CAT_ENTRATE, CAT_USCITE = get_categories()
 LISTA_TUTTE = sorted(list(set(CAT_ENTRATE + CAT_USCITE)))
 
-# --- CARICAMENTO BUDGET (POTENZIATO: CLEAN MESI & IMPORTI) ---
+# --- CARICAMENTO BUDGET (BLINDATO: Normalizza Mese, Tipo e Importo) ---
 @st.cache_data(ttl=0) 
 def get_budget_data():
     try:
-        # Legge solo le prime 4 colonne: Mese, Categoria, Tipo, Importo
+        # Legge solo le prime 4 colonne
         df_bud = conn.read(worksheet="DB_BUDGET", usecols=list(range(4))).fillna(0)
         
-        # Rinomina le colonne se ce ne sono almeno 4
+        # Rinomina colonne standard
         if len(df_bud.columns) >= 4:
             df_bud.columns = ["Mese", "Categoria", "Tipo", "Importo"]
         
-        # Pulizia Testo Base
+        # Pulizia base spazi
         for col in ["Mese", "Categoria", "Tipo"]:
             if col in df_bud.columns:
                 df_bud[col] = df_bud[col].astype(str).str.strip()
 
-        # --- 1. NORMALIZZAZIONE MESE (Fix "Dati non trovati") ---
+        # --- 1. NORMALIZZAZIONE MESE ---
         def normalizza_mese(val):
             val = str(val).strip().lower()
             if val.startswith('gen') or val in ['1', '01']: return 'Gen'
@@ -90,17 +90,29 @@ def get_budget_data():
             if val.startswith('ott') or val == '10': return 'Ott'
             if val.startswith('nov') or val == '11': return 'Nov'
             if val.startswith('dic') or val == '12': return 'Dic'
-            return val.capitalize()
+            return val.capitalize() # Fallback
 
         if "Mese" in df_bud.columns:
             df_bud["Mese"] = df_bud["Mese"].apply(normalizza_mese)
+
+        # --- 2. NORMALIZZAZIONE TIPO (Fix per "Uscite" vs "Uscita") ---
+        def normalizza_tipo(val):
+            val = str(val).strip().lower()
+            # Se contiene "usc" (uscite, uscita) o "spes" (spese) -> Uscita
+            if 'usc' in val or 'spes' in val: return 'Uscita'
+            # Se contiene "ent" (entrate, entrata) o "ric" (ricavi) -> Entrata
+            if 'ent' in val or 'ric' in val: return 'Entrata'
+            return val.capitalize()
+
+        if "Tipo" in df_bud.columns:
+            df_bud["Tipo"] = df_bud["Tipo"].apply(normalizza_tipo)
             
-        # --- 2. FIX IMPORTI (Fix Virgole) ---
+        # --- 3. FIX IMPORTI (Virgole e Punti) ---
         if "Importo" in df_bud.columns:
             def pulisci_numero(val):
                 s = str(val).strip().replace('€', '')
-                if '.' in s and ',' in s: s = s.replace('.', '').replace(',', '.')
-                elif ',' in s: s = s.replace(',', '.')
+                if '.' in s and ',' in s: s = s.replace('.', '').replace(',', '.') # 1.000,00 -> 1000.00
+                elif ',' in s: s = s.replace(',', '.') # 100,00 -> 100.00
                 return s
             df_bud["Importo"] = df_bud["Importo"].apply(pulisci_numero)
             df_bud["Importo"] = pd.to_numeric(df_bud["Importo"], errors='coerce').fillna(0)
@@ -359,18 +371,19 @@ with tab2:
     if df_cloud.empty:
         st.warning("Nessun dato nel database transazioni.")
     else:
-        # Carica Budget (NUOVA FUNZIONE PER DB VERTICALE)
+        # Carica Budget
         df_budget = get_budget_data()
         
         # --------------------------------------------------------
-        # 🕵️‍♂️ BOX DIAGNOSTICO - FONDAMENTALE (INTEGRAZIONE: MOSTRA TUTTO)
+        # 🕵️‍♂️ BOX DIAGNOSTICO - FONDAMENTALE (CON TIPI E MESI)
         # --------------------------------------------------------
         with st.expander("🕵️‍♂️ DEBUG BUDGET (Clicca qui se vedi tutto a zero)", expanded=False):
             if df_budget.empty:
                 st.error("Il file DB_BUDGET sembra vuoto o illeggibile.")
             else:
-                st.write("Visualizzazione completa dei dati caricati (Mese Normalizzato):")
-                # Visualizza TUTTO il dataframe, senza limiti
+                st.write("Visualizzazione completa dei dati caricati (Mese e Tipo Normalizzati):")
+                st.write(f"Tipi Trovati unici: {df_budget['Tipo'].unique()}")
+                st.write(f"Mesi Trovati unici: {df_budget['Mese'].unique()}")
                 st.dataframe(df_budget, use_container_width=True)
 
         # Prepara dati per analisi
@@ -438,6 +451,7 @@ with tab2:
 
             # --- TABELLA USCITE ---
             st.markdown("### 🔴 Uscite vs Budget")
+            # FILTRO CRUCIALE: Qui filtra per "Uscita" (normalizzato)
             df_out = df_merge[df_merge["Tipo"] == "Uscita"].copy()
             if not df_out.empty:
                 df_out["Risparmio (Delta)"] = df_out["Budget"] - df_out["Reale"]
@@ -475,6 +489,7 @@ with tab2:
 
             # --- TABELLA ENTRATE ---
             st.markdown("### 🟢 Entrate vs Budget")
+            # FILTRO CRUCIALE: Qui filtra per "Entrata" (normalizzato)
             df_in = df_merge[df_merge["Tipo"] == "Entrata"].copy()
             if not df_in.empty:
                 df_in["Extra (Delta)"] = df_in["Reale"] - df_in["Budget"]
