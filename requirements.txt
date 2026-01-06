@@ -4,4 +4,5 @@ st-gsheets-connection
 plotly
 imap-tools
 openpyxl
+matplotlib
 
