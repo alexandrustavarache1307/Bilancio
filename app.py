@@ -172,11 +172,8 @@ def scarica_spese_da_gmail():
 def crea_prospetto(df, index_col, columns_col, agg_func='sum'):
     if df.empty: return pd.DataFrame()
     pivot = df.pivot_table(index=index_col, columns=columns_col, values='Importo', aggfunc=agg_func, fill_value=0)
-    # Totali riga
     pivot["TOTALE"] = pivot.sum(axis=1)
-    # Ordina per totale decrescente
     pivot = pivot.sort_values("TOTALE", ascending=False)
-    # Totali colonna
     pivot.loc["TOTALE"] = pivot.sum()
     return pivot
 
@@ -297,7 +294,7 @@ with tab1:
             st.rerun()
 
 # ==========================================
-# TAB 2: REPORT & PROSPETTI (NUOVO!)
+# TAB 2: REPORT & PROSPETTI
 # ==========================================
 with tab2:
     if df_cloud.empty:
@@ -310,7 +307,7 @@ with tab2:
         df_analysis["Trimestre"] = "Q" + df_analysis["Data"].dt.quarter.astype(str)
         df_analysis["Semestre"] = df_analysis["MeseNum"].apply(lambda x: "H1" if x <= 6 else "H2")
 
-        # Filtro Anno Laterale
+        # Filtro Anno
         anni_disponibili = sorted(df_analysis["Anno"].unique(), reverse=True)
         anno_sel = st.sidebar.selectbox("📅 Seleziona Anno Report", anni_disponibili)
         
@@ -324,13 +321,13 @@ with tab2:
 
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("Entrate Totali", f"{tot_entrate:,.2f} €", border=True)
-        k2.metric("Uscite Totali", f"{tot_uscite:,.2f} €", delta_color="inverse", border=True) # Rosso non disponibile default su metric normale ma usiamo delta dopo
+        k2.metric("Uscite Totali", f"{tot_uscite:,.2f} €", delta_color="inverse", border=True)
         k3.metric("Saldo Netto", f"{saldo:,.2f} €", delta=f"{saldo:,.2f} €", border=True)
         k4.metric("% Risparmio", f"{risparmio_pct:.1f}%", border=True)
 
         st.divider()
 
-        # --- SOTTOTAB PER VISTE TEMPORALI ---
+        # --- SOTTOTAB ---
         sub_t1, sub_t2, sub_t3, sub_t4 = st.tabs(["📅 Mensile", "📊 Trimestrale", "🗓 Semestrale", "📆 Annuale"])
 
         # 1. MENSILE
@@ -341,9 +338,10 @@ with tab2:
             st.markdown("**ENTRATE**")
             df_e = df_anno[df_anno["Tipo"] == "Entrata"]
             pivot_e = crea_prospetto(df_e, "Categoria", "MeseNum")
-            # Rinomina colonne mesi (1 -> Gen, 2 -> Feb...)
             mesi_map = {1:'Gen', 2:'Feb', 3:'Mar', 4:'Apr', 5:'Mag', 6:'Giu', 7:'Lug', 8:'Ago', 9:'Set', 10:'Ott', 11:'Nov', 12:'Dic'}
             pivot_e = pivot_e.rename(columns=mesi_map)
+            
+            # STILE VERDE
             st.dataframe(pivot_e.style.format("{:.2f} €").background_gradient(cmap="Greens", axis=None), use_container_width=True)
 
             # Pivot Uscite
@@ -351,6 +349,8 @@ with tab2:
             df_u = df_anno[df_anno["Tipo"] == "Uscita"]
             pivot_u = crea_prospetto(df_u, "Categoria", "MeseNum")
             pivot_u = pivot_u.rename(columns=mesi_map)
+            
+            # STILE ROSSO
             st.dataframe(pivot_u.style.format("{:.2f} €").background_gradient(cmap="Reds", axis=None), use_container_width=True)
 
         # 2. TRIMESTRALE
@@ -361,37 +361,35 @@ with tab2:
             with col_t1:
                 st.caption("Entrate per Trimestre")
                 pivot_eq = crea_prospetto(df_e, "Categoria", "Trimestre")
-                st.dataframe(pivot_eq.style.format("{:.2f} €"), use_container_width=True)
+                st.dataframe(pivot_eq.style.format("{:.2f} €").background_gradient(cmap="Greens", axis=None), use_container_width=True)
             
             with col_t2:
                 st.caption("Uscite per Trimestre")
                 pivot_uq = crea_prospetto(df_u, "Categoria", "Trimestre")
-                st.dataframe(pivot_uq.style.format("{:.2f} €").background_gradient(cmap="Reds"), use_container_width=True)
+                st.dataframe(pivot_uq.style.format("{:.2f} €").background_gradient(cmap="Reds", axis=None), use_container_width=True)
 
         # 3. SEMESTRALE
         with sub_t3:
             st.subheader(f"Dettaglio Semestrale {anno_sel}")
-            # Qui facciamo un pivot unico Saldo
             pivot_us = crea_prospetto(df_u, "Categoria", "Semestre")
-            st.dataframe(pivot_us.style.format("{:.2f} €").highlight_max(axis=0, color='pink'), use_container_width=True)
+            # Highlight solo sul massimo
+            st.dataframe(pivot_us.style.format("{:.2f} €").background_gradient(cmap="Reds", axis=None), use_container_width=True)
 
-        # 4. ANNUALE (Confronto categorie)
+        # 4. ANNUALE
         with sub_t4:
             st.subheader("Riepilogo Categorie Anno")
             col_a1, col_a2 = st.columns(2)
             
-            # Top categorie uscite
             top_uscite = df_u.groupby("Categoria")["Importo"].sum().sort_values(ascending=False).head(10)
             with col_a1:
                 st.markdown("**Top 10 Spese**")
-                st.bar_chart(top_uscite, color="#ff4b4b", horizontal=True) # Rosso
+                st.bar_chart(top_uscite, color="#ff4b4b", horizontal=True)
             
-            # Trend mensile (Entrate vs Uscite)
             monthly_trend = df_anno.groupby(["MeseNum", "Tipo"])["Importo"].sum().unstack().fillna(0)
             monthly_trend = monthly_trend.rename(index=mesi_map)
             with col_a2:
                 st.markdown("**Andamento Mensile**")
-                st.bar_chart(monthly_trend, color=["#2ecc71", "#ff4b4b"]) # Verde e Rosso
+                st.bar_chart(monthly_trend, color=["#2ecc71", "#ff4b4b"])
 
 # ==========================================
 # TAB 3: MODIFICA STORICO
