@@ -5,7 +5,6 @@ from datetime import datetime
 from imap_tools import MailBox
 import re
 import uuid
-import plotly.express as px
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Piano Pluriennale", layout="wide", page_icon="☁️")
@@ -62,16 +61,6 @@ def get_categories():
         return ["DA VERIFICARE"], ["DA VERIFICARE"]
 
 CAT_ENTRATE, CAT_USCITE = get_categories()
-
-# --- CARICAMENTO BUDGET ---
-@st.cache_data(ttl=60)
-def get_budget_data():
-    try:
-        df_bud = conn.read(worksheet="DB_BUDGET", usecols=list(range(14))).fillna(0)
-        df_bud.columns = [str(c).strip() for c in df_bud.columns]
-        return df_bud
-    except:
-        return pd.DataFrame()
 
 # --- CERVELLO SMART ---
 def trova_categoria_smart(descrizione, lista_categorie_disponibili):
@@ -194,10 +183,10 @@ st.title("☁️ Piano Pluriennale 2026")
 # Carica DB
 try:
     df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(7)), ttl=0)
-    df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
-    df_cloud["Importo"] = pd.to_numeric(df_cloud["Importo"], errors='coerce').fillna(0)
 except:
-    df_cloud = pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"])
+    df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(6)), ttl=0)
+
+df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
 
 # Session State
 if "df_mail_found" not in st.session_state: st.session_state["df_mail_found"] = pd.DataFrame()
@@ -311,90 +300,96 @@ with tab2:
     if df_cloud.empty:
         st.warning("Nessun dato nel database.")
     else:
+        # Prepara dati per analisi
         df_analysis = df_cloud.copy()
         df_analysis["Anno"] = df_analysis["Data"].dt.year
         df_analysis["MeseNum"] = df_analysis["Data"].dt.month
-        map_mesi = {1:'Gen', 2:'Feb', 3:'Mar', 4:'Apr', 5:'Mag', 6:'Giu', 7:'Lug', 8:'Ago', 9:'Set', 10:'Ott', 11:'Nov', 12:'Dic'}
+        df_analysis["Trimestre"] = "Q" + df_analysis["Data"].dt.quarter.astype(str)
+        df_analysis["Semestre"] = df_analysis["MeseNum"].apply(lambda x: "H1" if x <= 6 else "H2")
 
-        # Filtri
-        col_f1, col_f2 = st.columns(2)
-        with col_f1: anno_sel = st.selectbox("📅 Anno", sorted(df_analysis["Anno"].unique(), reverse=True) if not df_analysis.empty else [2026])
-        with col_f2: mese_sel_nome = st.selectbox("📆 Mese Analisi", list(map_mesi.values()), index=datetime.now().month-1)
+        # Filtro Anno
+        anni_disponibili = sorted(df_analysis["Anno"].unique(), reverse=True)
+        anno_sel = st.sidebar.selectbox("📅 Seleziona Anno Report", anni_disponibili)
         
-        mese_sel_num = [k for k, v in map_mesi.items() if v == mese_sel_nome][0]
         df_anno = df_analysis[df_analysis["Anno"] == anno_sel]
-        df_mese = df_anno[df_anno["MeseNum"] == mese_sel_num]
 
-        # KPI Globali Anno
+        # --- KPI ROW ---
+        tot_entrate = df_anno[df_anno["Tipo"] == "Entrata"]["Importo"].sum()
+        tot_uscite = df_anno[df_anno["Tipo"] == "Uscita"]["Importo"].sum()
+        saldo = tot_entrate - tot_uscite
+        risparmio_pct = (saldo / tot_entrate * 100) if tot_entrate > 0 else 0
+
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Entrate Totali (Anno)", f"{df_anno[df_anno['Tipo']=='Entrata']['Importo'].sum():,.2f} €")
-        k2.metric("Uscite Totali (Anno)", f"{df_anno[df_anno['Tipo']=='Uscita']['Importo'].sum():,.2f} €")
-        k3.metric("Saldo Netto", f"{(df_anno[df_anno['Tipo']=='Entrata']['Importo'].sum() - df_anno[df_anno['Tipo']=='Uscita']['Importo'].sum()):,.2f} €")
-
-        # LOGICA BUDGET
-        df_budget = get_budget_data()
-        reale_u_mese = df_mese[df_mese["Tipo"] == "Uscita"].groupby("Categoria")["Importo"].sum().reset_index()
-        
-        if not df_budget.empty and mese_sel_nome in df_budget.columns:
-            bud_u = df_budget[df_budget["Tipo"] == "Uscita"][["Categoria", mese_sel_nome]].rename(columns={mese_sel_nome: "Budget"})
-            
-            # Logica SALDO INIZIALE: escluso se non è Gennaio
-            if mese_sel_nome != "Gen":
-                bud_u = bud_u[bud_u["Categoria"] != "SALDO INIZIALE"]
-                reale_u_mese = reale_u_mese[reale_u_mese["Categoria"] != "SALDO INIZIALE"]
-
-            comp = pd.merge(bud_u, reale_u_mese, on="Categoria", how="outer").fillna(0).rename(columns={"Importo": "Reale"})
-            comp["Delta"] = comp["Budget"] - comp["Reale"]
-            
-            k4.metric("In Tasca (Mese)", f"{(comp['Budget'].sum() - comp['Reale'].sum()):,.2f} €")
-            st.divider()
-            
-            # Alerts
-            sfori = comp[comp["Delta"] < 0]
-            for _, r in sfori.iterrows():
-                st.error(f"⚠️ **SFORAMENTO {r['Categoria']}**: Budget superato di {abs(r['Delta']):.2f} €!")
-
-            # Grafico e Tabella
-            g_left, g_right = st.columns([1, 1.2])
-            with g_left:
-                if not reale_u_mese.empty:
-                    fig = px.pie(reale_u_mese, values='Importo', names='Categoria', title=f"Spese {mese_sel_nome}", hole=.4)
-                    st.plotly_chart(fig, use_container_width=True)
-            with g_right:
-                st.markdown("### 📊 Budget vs Reale")
-                st.dataframe(
-                    comp.style.format("{:.2f} €", subset=["Budget", "Reale", "Delta"])
-                    .map(lambda x: 'color:red; font-weight:bold' if x < 0 else 'color:green', subset=['Delta']), 
-                    use_container_width=True, 
-                    hide_index=True
-                )
+        k1.metric("Entrate Totali", f"{tot_entrate:,.2f} €", border=True)
+        k2.metric("Uscite Totali", f"{tot_uscite:,.2f} €", delta_color="inverse", border=True)
+        k3.metric("Saldo Netto", f"{saldo:,.2f} €", delta=f"{saldo:,.2f} €", border=True)
+        k4.metric("% Risparmio", f"{risparmio_pct:.1f}%", border=True)
 
         st.divider()
-        st.subheader("📅 Riepiloghi Storici")
-        sub_t1, sub_t2, sub_t3, sub_t4 = st.tabs(["Mensile", "Trimestrale", "Semestrale", "Annuale"])
 
+        # --- SOTTOTAB ---
+        sub_t1, sub_t2, sub_t3, sub_t4 = st.tabs(["📅 Mensile", "📊 Trimestrale", "🗓 Semestrale", "📆 Annuale"])
+
+        # 1. MENSILE
         with sub_t1:
-            st.markdown("**USCITE MENSILI**")
-            pivot_u = crea_prospetto(df_anno[df_anno["Tipo"] == "Uscita"], "Categoria", "MeseNum").rename(columns=map_mesi)
+            st.subheader(f"Dettaglio Mensile {anno_sel}")
+            
+            # Pivot Entrate
+            st.markdown("**ENTRATE**")
+            df_e = df_anno[df_anno["Tipo"] == "Entrata"]
+            pivot_e = crea_prospetto(df_e, "Categoria", "MeseNum")
+            mesi_map = {1:'Gen', 2:'Feb', 3:'Mar', 4:'Apr', 5:'Mag', 6:'Giu', 7:'Lug', 8:'Ago', 9:'Set', 10:'Ott', 11:'Nov', 12:'Dic'}
+            pivot_e = pivot_e.rename(columns=mesi_map)
+            
+            # STILE VERDE
+            st.dataframe(pivot_e.style.format("{:.2f} €").background_gradient(cmap="Greens", axis=None), use_container_width=True)
+
+            # Pivot Uscite
+            st.markdown("**USCITE**")
+            df_u = df_anno[df_anno["Tipo"] == "Uscita"]
+            pivot_u = crea_prospetto(df_u, "Categoria", "MeseNum")
+            pivot_u = pivot_u.rename(columns=mesi_map)
+            
+            # STILE ROSSO
             st.dataframe(pivot_u.style.format("{:.2f} €").background_gradient(cmap="Reds", axis=None), use_container_width=True)
 
+        # 2. TRIMESTRALE
         with sub_t2:
-            df_anno["Trimestre"] = "Q" + df_anno["Data"].dt.quarter.astype(str)
-            st.dataframe(crea_prospetto(df_anno[df_anno["Tipo"] == "Uscita"], "Categoria", "Trimestre").style.format("{:.2f} €"), use_container_width=True)
+            st.subheader(f"Dettaglio Trimestrale {anno_sel}")
+            col_t1, col_t2 = st.columns(2)
+            
+            with col_t1:
+                st.caption("Entrate per Trimestre")
+                pivot_eq = crea_prospetto(df_e, "Categoria", "Trimestre")
+                st.dataframe(pivot_eq.style.format("{:.2f} €").background_gradient(cmap="Greens", axis=None), use_container_width=True)
+            
+            with col_t2:
+                st.caption("Uscite per Trimestre")
+                pivot_uq = crea_prospetto(df_u, "Categoria", "Trimestre")
+                st.dataframe(pivot_uq.style.format("{:.2f} €").background_gradient(cmap="Reds", axis=None), use_container_width=True)
 
+        # 3. SEMESTRALE
         with sub_t3:
-            df_anno["Semestre"] = df_anno["MeseNum"].apply(lambda x: "H1" if x <= 6 else "H2")
-            st.dataframe(crea_prospetto(df_anno[df_anno["Tipo"] == "Uscita"], "Categoria", "Semestre").style.format("{:.2f} €"), use_container_width=True)
+            st.subheader(f"Dettaglio Semestrale {anno_sel}")
+            pivot_us = crea_prospetto(df_u, "Categoria", "Semestre")
+            # Highlight solo sul massimo
+            st.dataframe(pivot_us.style.format("{:.2f} €").background_gradient(cmap="Reds", axis=None), use_container_width=True)
 
+        # 4. ANNUALE
         with sub_t4:
+            st.subheader("Riepilogo Categorie Anno")
             col_a1, col_a2 = st.columns(2)
+            
+            top_uscite = df_u.groupby("Categoria")["Importo"].sum().sort_values(ascending=False).head(10)
             with col_a1:
-                st.markdown("**Top 10 Spese Anno**")
-                st.bar_chart(df_anno[df_anno["Tipo"]=="Uscita"].groupby("Categoria")["Importo"].sum().sort_values(ascending=False).head(10), color="#ff4b4b", horizontal=True)
+                st.markdown("**Top 10 Spese**")
+                st.bar_chart(top_uscite, color="#ff4b4b", horizontal=True)
+            
+            monthly_trend = df_anno.groupby(["MeseNum", "Tipo"])["Importo"].sum().unstack().fillna(0)
+            monthly_trend = monthly_trend.rename(index=mesi_map)
             with col_a2:
                 st.markdown("**Andamento Mensile**")
-                trend = df_anno.groupby(["MeseNum", "Tipo"])["Importo"].sum().unstack().fillna(0).rename(index=map_mesi)
-                st.bar_chart(trend, color=["#2ecc71", "#ff4b4b"])
+                st.bar_chart(monthly_trend, color=["#2ecc71", "#ff4b4b"])
 
 # ==========================================
 # TAB 3: MODIFICA STORICO
@@ -421,5 +416,5 @@ with tab3:
         df_to_update = df_storico_edited.copy()
         df_to_update["Data"] = pd.to_datetime(df_to_update["Data"]).dt.strftime("%Y-%m-%d")
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
-        st.success("Database aggiornato correttamente!")
+        st.success("Database aggiornato correttamnte!")
         st.rerun()
