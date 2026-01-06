@@ -5,4 +5,5 @@ plotly
 imap-tools
 openpyxl
 matplotlib
+plotly
 
