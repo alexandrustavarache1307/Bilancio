@@ -191,44 +191,102 @@ if "df_manual_entry" not in st.session_state: st.session_state["df_manual_entry"
 
 tab1, tab2, tab3 = st.tabs(["📥 NUOVE & IMPORTA", "📊 REPORT & BUDGET", "🗂 STORICO & MODIFICA"])
 
+# ==========================================
+# TAB 1: IMPORTAZIONE (RIPRISTINATO ORIGINALE)
+# ==========================================
 with tab1:
     col_search, col_actions = st.columns([1, 4])
     with col_search:
         if st.button("🔎 Cerca Nuove Mail", type="primary"):
-            with st.spinner("Analisi mail..."):
+            with st.spinner("Analisi mail in corso..."):
                 df_mail, df_scartate = scarica_spese_da_gmail()
                 st.session_state["df_mail_found"] = df_mail
                 st.session_state["df_mail_discarded"] = df_scartate
+    
     st.divider()
+
+    # Recupero Scartate
     if not st.session_state["df_mail_discarded"].empty:
-        with st.expander(f"⚠️ {len(st.session_state['df_mail_discarded'])} Mail Scartate", expanded=True):
-            st.dataframe(st.session_state["df_mail_discarded"])
-            if st.button("⬇️ Recupera Manualmente"):
-                st.session_state["df_manual_entry"] = pd.concat([st.session_state["df_manual_entry"], st.session_state["df_mail_discarded"]], ignore_index=True)
-                st.session_state["df_mail_discarded"] = pd.DataFrame(); st.rerun()
-    df_mail = st.session_state["df_mail_found"]
-    if not df_mail.empty:
-        firme = df_cloud["Firma"].astype(str).tolist() if "Firma" in df_cloud.columns else []
-        df_clean = df_mail[~df_mail["Firma"].astype(str).isin(firme)]
-        st.subheader("💰 Nuove Transazioni"); st.data_editor(df_clean, column_config={"Categoria": st.column_config.SelectboxColumn(options=CAT_ENTRATE)})
+        with st.expander(f"⚠️ Ci sono {len(st.session_state['df_mail_discarded'])} mail Widiba non riconosciute", expanded=True):
+            st.dataframe(st.session_state["df_mail_discarded"][["Data", "Descrizione"]], use_container_width=True, hide_index=True)
+            if st.button("⬇️ Recupera e Correggi Manualmente"):
+                recuperate = st.session_state["df_mail_discarded"].copy()
+                st.session_state["df_manual_entry"] = pd.concat([st.session_state["df_manual_entry"], recuperate], ignore_index=True)
+                st.session_state["df_mail_discarded"] = pd.DataFrame()
+                st.rerun()
+
+    # Visualizzazione e Editor Nuove
+    df_view_entrate = pd.DataFrame()
+    df_view_uscite = pd.DataFrame()
     
-    st.markdown("##### ✍️ Manuale")
-    if st.session_state["df_manual_entry"].empty: st.session_state["df_manual_entry"] = pd.DataFrame([{"Data": datetime.now(), "Descrizione": "", "Importo": 0.0, "Tipo": "Uscita", "Categoria": "DA VERIFICARE"}])
-    edited_manual = st.data_editor(st.session_state["df_manual_entry"], num_rows="dynamic", column_config={"Categoria": st.column_config.SelectboxColumn(options=sorted(CAT_USCITE + CAT_ENTRATE))})
+    if not st.session_state["df_mail_found"].empty:
+        df_clean = st.session_state["df_mail_found"]
+        if "Firma" in df_cloud.columns:
+            firme_esistenti = df_cloud["Firma"].astype(str).tolist()
+            df_clean = df_clean[~df_clean["Firma"].astype(str).isin(firme_esistenti)]
+        
+        df_clean["Data"] = pd.to_datetime(df_clean["Data"], errors='coerce')
+        df_view_entrate = df_clean[df_clean["Tipo"] == "Entrata"]
+        df_view_uscite = df_clean[df_clean["Tipo"] == "Uscita"]
+
+    st.markdown("##### 💰 Nuove Entrate")
+    if not df_view_entrate.empty:
+        edited_entrate = st.data_editor(
+            df_view_entrate,
+            column_config={"Categoria": st.column_config.SelectboxColumn(options=CAT_ENTRATE, required=True), "Tipo": st.column_config.Column(disabled=True), "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True), "Importo": st.column_config.NumberColumn(format="%.2f €")},
+            key="edit_entrate_mail", use_container_width=True
+        )
+    else:
+        st.info("Nessuna nuova entrata.")
+
+    st.markdown("##### 💸 Nuove Uscite")
+    if not df_view_uscite.empty:
+        edited_uscite = st.data_editor(
+            df_view_uscite,
+            column_config={"Categoria": st.column_config.SelectboxColumn(options=CAT_USCITE, required=True), "Tipo": st.column_config.Column(disabled=True), "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True), "Importo": st.column_config.NumberColumn(format="%.2f €")},
+            key="edit_uscite_mail", use_container_width=True
+        )
+    else:
+        st.info("Nessuna nuova uscita.")
+
+    st.markdown("---")
+    st.markdown("##### ✍️ Manuale / Correzioni")
+    if st.session_state["df_manual_entry"].empty:
+        st.session_state["df_manual_entry"] = pd.DataFrame([{"Data": datetime.now(), "Descrizione": "Spesa contanti", "Importo": 0.0, "Tipo": "Uscita", "Categoria": "DA VERIFICARE", "Firma": "", "Mese": ""}])
     
-    if st.button("💾 SALVA TUTTO", type="primary", use_container_width=True):
+    st.session_state["df_manual_entry"]["Data"] = pd.to_datetime(st.session_state["df_manual_entry"]["Data"], errors='coerce')
+    edited_manual = st.data_editor(
+        st.session_state["df_manual_entry"],
+        num_rows="dynamic",
+        column_config={"Categoria": st.column_config.SelectboxColumn(options=sorted(CAT_USCITE + CAT_ENTRATE), required=True), "Tipo": st.column_config.SelectboxColumn(options=["Uscita", "Entrata"], required=True), "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True), "Importo": st.column_config.NumberColumn(format="%.2f €")},
+        key="edit_manual", use_container_width=True
+    )
+
+    if st.button("💾 SALVA TUTTO NEL CLOUD", type="primary", use_container_width=True):
         da_salvare = []
-        if not df_mail.empty: da_salvare.append(df_mail_edit) # type: ignore
+        if not df_view_entrate.empty: da_salvare.append(edited_entrate)
+        if not df_view_uscite.empty: da_salvare.append(edited_uscite)
         if not edited_manual.empty:
-            valid = edited_manual[edited_manual["Importo"] > 0].copy()
-            if not valid.empty:
-                valid["Data"] = pd.to_datetime(valid["Data"]); valid["Mese"] = valid["Data"].dt.strftime('%b-%y'); valid["Firma"] = [f"MAN-{uuid.uuid4().hex[:6]}" for _ in range(len(valid))]
-                da_salvare.append(valid)
+            valid_manual = edited_manual[edited_manual["Importo"] > 0]
+            if not valid_manual.empty:
+                valid_manual["Data"] = pd.to_datetime(valid_manual["Data"])
+                valid_manual["Mese"] = valid_manual["Data"].dt.strftime('%b-%y')
+                valid_manual["Firma"] = valid_manual.apply(lambda x: x["Firma"] if x["Firma"] and str(x["Firma"]) != "nan" else f"MAN-{x['Data'].strftime('%Y%m%d')}-{uuid.uuid4().hex[:6]}", axis=1)
+                da_salvare.append(valid_manual)
+        
         if da_salvare:
-            final = pd.concat([df_cloud] + da_salvare, ignore_index=True)
-            final["Data"] = pd.to_datetime(final["Data"]).dt.strftime("%Y-%m-%d")
-            conn.update(worksheet="DB_TRANSAZIONI", data=final)
-            st.session_state["df_mail_found"] = pd.DataFrame(); st.session_state["df_manual_entry"] = pd.DataFrame(); st.balloons(); st.rerun()
+            df_new_total = pd.concat(da_salvare, ignore_index=True)
+            df_final = pd.concat([df_cloud, df_new_total], ignore_index=True)
+            df_final["Data"] = pd.to_datetime(df_final["Data"])
+            df_final = df_final.sort_values("Data", ascending=False)
+            df_final["Data"] = df_final["Data"].dt.strftime("%Y-%m-%d")
+            conn.update(worksheet="DB_TRANSAZIONI", data=df_final)
+            st.session_state["df_mail_found"] = pd.DataFrame()
+            st.session_state["df_manual_entry"] = pd.DataFrame()
+            st.session_state["df_mail_discarded"] = pd.DataFrame()
+            st.balloons()
+            st.success("✅ Tutto salvato correttamente!")
+            st.rerun()
 
 # --- TAB 2 ---
 with tab2:
@@ -271,20 +329,17 @@ with tab2:
 
     # --- FILTRO DATI REALI ---
     df_anno = df_analysis[df_analysis["Anno"] == anno_sel]
-    # Filtra solo i mesi selezionati
     df_target_reale = df_anno[df_anno["MeseNum"].isin(lista_num_target)]
 
-    # --- KPI GLOBAL (Sempre Annuali per contesto, o del periodo?) ---
-    # Utente vuole contesto periodo selezionato
+    # --- KPI GLOBAL ---
     ent_p = df_target_reale[df_target_reale["Tipo"]=="Entrata"]["Importo"].sum()
     usc_p = df_target_reale[df_target_reale["Tipo"]=="Uscita"]["Importo"].sum()
     
-    # Per il Saldo Iniziale: ESCLUDERE SEMPRE tranne se è GENNAIO (Mensile)
-    # Se periodo include Gennaio ma è aggregato (es. Q1), escludiamo saldo iniziale dalle entrate per non falsare
+    # LOGICA SALDO INIZIALE PER KPI
+    # Mostra Saldo Iniziale SOLO se siamo in Mensile e il mese è Gennaio (o periodo include Gennaio senza altri mesi, ma semplifichiamo a Mensile)
     mostra_saldo_iniziale = (periodo_sel == "Mensile" and "Gen" in lista_mesi_target)
     
     if not mostra_saldo_iniziale:
-        # Rimuove dai KPI
         ent_p = df_target_reale[(df_target_reale["Tipo"]=="Entrata") & (df_target_reale["Categoria"] != "SALDO INIZIALE")]["Importo"].sum()
 
     k1, k2, k3 = st.columns(3)
@@ -308,13 +363,11 @@ with tab2:
         # 2. Raggruppa Preventivo (Budget)
         preventivo = pd.DataFrame()
         if not df_budget.empty and "Mese" in df_budget.columns:
-            # Filtra per i mesi target
             df_bud_filt = df_budget[df_budget["Mese"].isin(lista_mesi_target)]
             if not df_bud_filt.empty:
-                # Somma gli importi per categoria (es. somma budget Gen+Feb+Mar)
                 preventivo = df_bud_filt.groupby(["Categoria", "Tipo"])["Importo"].sum().reset_index().rename(columns={"Importo": "Budget"})
 
-        # --- FILTRO SALDO INIZIALE (Logic: Remove unless Single Month Jan) ---
+        # --- FILTRO SALDO INIZIALE (Logic: Escludi sempre tranne Gennaio) ---
         if not mostra_saldo_iniziale:
             if not preventivo.empty: preventivo = preventivo[preventivo["Categoria"] != "SALDO INIZIALE"]
             if not consuntivo.empty: consuntivo = consuntivo[consuntivo["Categoria"] != "SALDO INIZIALE"]
@@ -329,6 +382,15 @@ with tab2:
 
         # Calcoli finali
         df_merge["Budget"] = pd.to_numeric(df_merge["Budget"]); df_merge["Reale"] = pd.to_numeric(df_merge["Reale"])
+        
+        # --- FIX SPECIALE SALDO INIZIALE (Gennaio) ---
+        # Se siamo a Gennaio, forza Reale = Budget per "SALDO INIZIALE" se Reale è 0 (perché non è nel DB transazioni)
+        if mostra_saldo_iniziale:
+            mask_saldo = (df_merge["Categoria"] == "SALDO INIZIALE")
+            if mask_saldo.any():
+                # Copia il valore Budget in Reale dove Reale è 0
+                df_merge.loc[mask_saldo & (df_merge["Reale"] == 0), "Reale"] = df_merge.loc[mask_saldo, "Budget"]
+
         df_merge["Delta"] = df_merge["Budget"] - df_merge["Reale"]
         
         # Visualizzazione Uscite
@@ -337,8 +399,15 @@ with tab2:
         if not out.empty:
             c_g, c_t = st.columns([1, 1.5])
             with c_g: 
-                if out["Reale"].sum()>0: st.plotly_chart(px.pie(out, values='Reale', names='Categoria', hole=0.4, title="Spese Reali"), use_container_width=True)
-                elif out["Budget"].sum()>0: st.plotly_chart(px.pie(out, values='Budget', names='Categoria', hole=0.4, title="Budget Previsto"), use_container_width=True)
+                # PIE CHART: Fix textposition='inside'
+                if out["Reale"].sum()>0: 
+                    fig = px.pie(out, values='Reale', names='Categoria', hole=0.4, title="Spese Reali")
+                    fig.update_traces(textposition='inside', textinfo='percent+label')
+                    st.plotly_chart(fig, use_container_width=True)
+                elif out["Budget"].sum()>0: 
+                    fig = px.pie(out, values='Budget', names='Categoria', hole=0.4, title="Budget Previsto")
+                    fig.update_traces(textposition='inside', textinfo='percent+label')
+                    st.plotly_chart(fig, use_container_width=True)
             with c_t:
                 st.dataframe(out[["Categoria", "Budget", "Reale", "Delta"]].sort_values("Budget", ascending=False).style.format("{:.2f} €", subset=["Budget", "Reale", "Delta"]).map(style_variance_uscite, subset=["Delta"]), use_container_width=True)
         
