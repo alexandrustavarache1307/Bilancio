@@ -48,17 +48,25 @@ def get_categories():
 
 CAT_ENTRATE, CAT_USCITE = get_categories()
 
-# --- CARICAMENTO BUDGET ---
-@st.cache_data(ttl=60)
+# --- CARICAMENTO BUDGET (AGGIORNATO PER 4 COLONNE) ---
+@st.cache_data(ttl=0) # Cache 0 per vedere subito modifiche
 def get_budget_data():
     try:
-        df_bud = conn.read(worksheet="DB_BUDGET", usecols=list(range(14))).fillna(0)
-        df_bud.columns = [str(c).strip() for c in df_bud.columns]
-        # Pulizia fondamentale per leggere i numeri
-        for col in df_bud.columns:
-            if col not in ["Categoria", "Tipo"]:
-                df_bud[col] = df_bud[col].astype(str).str.replace('€','').str.replace('.','').str.replace(',','.')
-                df_bud[col] = pd.to_numeric(df_bud[col], errors='coerce').fillna(0)
+        # Legge solo le prime 4 colonne: Mese, Categoria, Tipo, Importo
+        df_bud = conn.read(worksheet="DB_BUDGET", usecols=list(range(4))).fillna(0)
+        
+        # Rinomina per sicurezza
+        if len(df_bud.columns) >= 4:
+            df_bud.columns = ["Mese", "Categoria", "Tipo", "Importo"]
+        
+        # Pulizia Testo (Mese, Categoria, Tipo)
+        for col in ["Mese", "Categoria", "Tipo"]:
+            df_bud[col] = df_bud[col].astype(str).str.strip()
+            
+        # Pulizia Importo (Rimuove €, trasforma in numero)
+        df_bud["Importo"] = df_bud["Importo"].astype(str).str.replace('€','').str.replace('.','').str.replace(',','.')
+        df_bud["Importo"] = pd.to_numeric(df_bud["Importo"], errors='coerce').fillna(0)
+        
         return df_bud
     except:
         return pd.DataFrame()
@@ -199,6 +207,9 @@ try:
     df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(7)), ttl=0)
     df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
     df_cloud["Importo"] = pd.to_numeric(df_cloud["Importo"], errors='coerce').fillna(0)
+    # Pulizia Categoria DB
+    if "Categoria" in df_cloud.columns:
+        df_cloud["Categoria"] = df_cloud["Categoria"].astype(str).str.strip()
 except:
     df_cloud = pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"])
 
@@ -316,11 +327,7 @@ with tab2:
     else:
         # Carica Budget
         df_budget = get_budget_data()
-        has_budget = not df_budget.empty
-
-        if not has_budget:
-            st.warning("⚠️ Foglio 'DB_BUDGET' non trovato o vuoto.")
-
+        
         # Prepara dati per analisi
         df_analysis = df_cloud.copy()
         df_analysis["Anno"] = df_analysis["Data"].dt.year
@@ -359,22 +366,21 @@ with tab2:
             consuntivo = df_mese.groupby(["Categoria", "Tipo"])["Importo"].sum().reset_index()
             consuntivo.rename(columns={"Importo": "Reale"}, inplace=True)
 
-            # 2. Calcola Preventivo (Budget)
+            # 2. Calcola Preventivo (Budget) - LOGICA FILTRO PER MESE
             preventivo = pd.DataFrame()
-            if has_budget:
-                if mese_sel_nome in df_budget.columns:
-                    preventivo = df_budget[["Categoria", "Tipo", mese_sel_nome]].copy()
-                    preventivo.rename(columns={mese_sel_nome: "Budget"}, inplace=True)
-                    # PROTEZIONE SALDO INIZIALE (Escludi se non è Gennaio)
-                    if mese_sel_nome != "Gen":
-                        preventivo = preventivo[preventivo["Categoria"] != "SALDO INIZIALE"]
-                        consuntivo = consuntivo[consuntivo["Categoria"] != "SALDO INIZIALE"]
-                else:
-                    st.error(f"Colonna '{mese_sel_nome}' non trovata nel foglio DB_BUDGET.")
+            if not df_budget.empty:
+                # Filtra per il mese selezionato (assumendo colonna 'Mese' nel budget)
+                preventivo = df_budget[df_budget["Mese"] == mese_sel_nome].copy()
+                preventivo = preventivo.rename(columns={"Importo": "Budget"})
+                
+                # PROTEZIONE SALDO INIZIALE
+                if mese_sel_nome != "Gen":
+                    preventivo = preventivo[preventivo["Categoria"] != "SALDO INIZIALE"]
+                    consuntivo = consuntivo[consuntivo["Categoria"] != "SALDO INIZIALE"]
 
-            # 3. Unisci (Merge)
+            # 3. Unisci (Merge) - Left Join sul Budget per vedere tutto il preventivato
             if not preventivo.empty:
-                df_merge = pd.merge(preventivo, consuntivo, on=["Categoria", "Tipo"], how="outer").fillna(0)
+                df_merge = pd.merge(preventivo, consuntivo, on=["Categoria", "Tipo"], how="left").fillna(0)
             else:
                 df_merge = consuntivo.copy()
                 df_merge["Budget"] = 0.0
@@ -394,7 +400,7 @@ with tab2:
             df_out = df_merge[df_merge["Tipo"] == "Uscita"].copy()
             if not df_out.empty:
                 df_out["Risparmio (Delta)"] = df_out["Budget"] - df_out["Reale"]
-                df_out = df_out[["Categoria", "Budget", "Reale", "Risparmio (Delta)"]].sort_values("Reale", ascending=False)
+                df_out = df_out[["Categoria", "Budget", "Reale", "Risparmio (Delta)"]].sort_values("Budget", ascending=False)
                 
                 # Totali
                 tot_bud = df_out["Budget"].sum()
@@ -420,14 +426,14 @@ with tab2:
                         hide_index=True
                     )
             else:
-                st.info("Nessuna uscita registrata o a budget per questo mese.")
+                st.info("Nessun dato di budget o spesa trovato per le uscite.")
 
             # --- TABELLA ENTRATE ---
             st.markdown("### 🟢 Entrate vs Budget")
             df_in = df_merge[df_merge["Tipo"] == "Entrata"].copy()
             if not df_in.empty:
                 df_in["Extra (Delta)"] = df_in["Reale"] - df_in["Budget"]
-                df_in = df_in[["Categoria", "Budget", "Reale", "Extra (Delta)"]].sort_values("Reale", ascending=False)
+                df_in = df_in[["Categoria", "Budget", "Reale", "Extra (Delta)"]].sort_values("Budget", ascending=False)
                 
                 st.dataframe(
                     df_in.style.format("{:.2f} €", subset=["Budget", "Reale", "Extra (Delta)"])
