@@ -59,8 +59,8 @@ def get_categories():
 CAT_ENTRATE, CAT_USCITE = get_categories()
 LISTA_TUTTE = sorted(list(set(CAT_ENTRATE + CAT_USCITE)))
 
-# --- CARICAMENTO BUDGET (INTEGRAZIONE: FIX VIRGOLE E IMPORTI) ---
-@st.cache_data(ttl=0) # Cache a 0 per aggiornamento immediato
+# --- CARICAMENTO BUDGET (POTENZIATO: CLEAN MESI & IMPORTI) ---
+@st.cache_data(ttl=0) 
 def get_budget_data():
     try:
         # Legge solo le prime 4 colonne: Mese, Categoria, Tipo, Importo
@@ -70,24 +70,38 @@ def get_budget_data():
         if len(df_bud.columns) >= 4:
             df_bud.columns = ["Mese", "Categoria", "Tipo", "Importo"]
         
-        # Pulizia Testo (Mese, Categoria, Tipo)
+        # Pulizia Testo Base
         for col in ["Mese", "Categoria", "Tipo"]:
             if col in df_bud.columns:
                 df_bud[col] = df_bud[col].astype(str).str.strip()
+
+        # --- 1. NORMALIZZAZIONE MESE (Fix "Dati non trovati") ---
+        def normalizza_mese(val):
+            val = str(val).strip().lower()
+            if val.startswith('gen') or val in ['1', '01']: return 'Gen'
+            if val.startswith('feb') or val in ['2', '02']: return 'Feb'
+            if val.startswith('mar') or val in ['3', '03']: return 'Mar'
+            if val.startswith('apr') or val in ['4', '04']: return 'Apr'
+            if val.startswith('mag') or val in ['5', '05']: return 'Mag'
+            if val.startswith('giu') or val in ['6', '06']: return 'Giu'
+            if val.startswith('lug') or val in ['7', '07']: return 'Lug'
+            if val.startswith('ago') or val in ['8', '08']: return 'Ago'
+            if val.startswith('set') or val in ['9', '09']: return 'Set'
+            if val.startswith('ott') or val == '10': return 'Ott'
+            if val.startswith('nov') or val == '11': return 'Nov'
+            if val.startswith('dic') or val == '12': return 'Dic'
+            return val.capitalize()
+
+        if "Mese" in df_bud.columns:
+            df_bud["Mese"] = df_bud["Mese"].apply(normalizza_mese)
             
-        # --- FIX INTELLIGENTE IMPORTI (VIRGOLE) ---
+        # --- 2. FIX IMPORTI (Fix Virgole) ---
         if "Importo" in df_bud.columns:
             def pulisci_numero(val):
-                # Converte in stringa, toglie spazi e simbolo €
                 s = str(val).strip().replace('€', '')
-                # Se c'è sia punto che virgola (es: 1.000,50) -> togli punto, cambia virgola in punto
-                if '.' in s and ',' in s:
-                    s = s.replace('.', '').replace(',', '.')
-                # Se c'è solo la virgola (es: 150,50) -> cambia virgola in punto
-                elif ',' in s:
-                    s = s.replace(',', '.')
+                if '.' in s and ',' in s: s = s.replace('.', '').replace(',', '.')
+                elif ',' in s: s = s.replace(',', '.')
                 return s
-
             df_bud["Importo"] = df_bud["Importo"].apply(pulisci_numero)
             df_bud["Importo"] = pd.to_numeric(df_bud["Importo"], errors='coerce').fillna(0)
         
@@ -108,7 +122,7 @@ def trova_categoria_smart(descrizione, lista_categorie_disponibili):
             return cat
     return "DA VERIFICARE"
 
-# --- LETTURA MAIL (COMPLETA CON REGEX ORIGINALI) ---
+# --- LETTURA MAIL ---
 def scarica_spese_da_gmail():
     nuove_transazioni = []
     mail_scartate = [] 
@@ -355,8 +369,8 @@ with tab2:
             if df_budget.empty:
                 st.error("Il file DB_BUDGET sembra vuoto o illeggibile.")
             else:
-                st.write("Visualizzazione completa dei dati caricati:")
-                # Rimosso .head() per vedere tutte le righe
+                st.write("Visualizzazione completa dei dati caricati (Mese Normalizzato):")
+                # Visualizza TUTTO il dataframe, senza limiti
                 st.dataframe(df_budget, use_container_width=True)
 
         # Prepara dati per analisi
