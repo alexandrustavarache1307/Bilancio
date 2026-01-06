@@ -3,14 +3,14 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
 from imap_tools import MailBox
-import re 
+import re
+import uuid
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="Bilancio Cloud", layout="wide", page_icon="☁️")
+st.set_page_config(page_title="Piano Pluriennale", layout="wide", page_icon="☁️")
 
-# --- 🧠 IL CERVELLO: MAPPA PAROLE CHIAVE -> TUA CATEGORIA ---
+# --- 🧠 IL CERVELLO: MAPPA PAROLE CHIAVE ---
 MAPPA_KEYWORD = {
-    # IMPORTANTE: Aggiorna queste associazioni con le parole chiave reali del tuo Excel!
     "lidl": "USCITE/PRANZO",
     "conad": "USCITE/PRANZO",
     "esselunga": "USCITE/PRANZO",
@@ -58,7 +58,6 @@ def get_categories():
         
         return cat_entrate, cat_uscite
     except Exception as e:
-        st.error(f"Errore lettura categorie: {e}")
         return ["DA VERIFICARE"], ["DA VERIFICARE"]
 
 CAT_ENTRATE, CAT_USCITE = get_categories()
@@ -76,13 +75,14 @@ def trova_categoria_smart(descrizione, lista_categorie_disponibili):
             return cat
     return "DA VERIFICARE"
 
-# --- LETTURA MAIL POTENZIATA (ASPIRATUTTO) ---
+# --- LETTURA MAIL POTENZIATA (CON DEBUG) ---
 def scarica_spese_da_gmail():
     nuove_transazioni = []
+    mail_scartate = [] # Lista per il debug
     
     if "email" not in st.secrets:
         st.error("Mancano i secrets!")
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
     user = st.secrets["email"]["user"]
     pwd = st.secrets["email"]["password"]
@@ -90,14 +90,12 @@ def scarica_spese_da_gmail():
     
     try:
         with MailBox(server).login(user, pwd) as mailbox:
-            # 1. CERCA NELLE ULTIME 100 MAIL (Così non scappa nulla)
-            for msg in mailbox.fetch(limit=30, reverse=True): 
+            for msg in mailbox.fetch(limit=50, reverse=True): 
                 
                 soggetto = msg.subject
                 corpo = msg.text or msg.html
                 corpo_clean = " ".join(corpo.split())
                 
-                # Deve essere Widiba
                 if "widiba" not in corpo_clean.lower() and "widiba" not in soggetto.lower():
                      continue
 
@@ -107,17 +105,12 @@ def scarica_spese_da_gmail():
                 categoria_suggerita = "DA VERIFICARE"
                 trovato = False
 
-                # --- NUOVA LOGICA DI RICONOSCIMENTO ---
-                # Usiamo regex più flessibili per catturare tutto (Bonifici, Prelievi, Addebiti, SDD)
-                
-                # PATTERN PER LE USCITE (Pagamenti, Prelievi, Addebiti, Bonifici in uscita)
-                # Cerca frasi tipo: "pagamento di...", "prelievo di...", "addebito di..."
+                # Regex Uscite
                 regex_uscite = [
                     r'(?:pagamento|prelievo|addebito|bonifico).*?di\s+([\d.,]+)\s+euro.*?(?:presso|per|a favore di|su)\s+(.*?)(?:\.|$)',
-                    r'ha\s+prelevato\s+([\d.,]+)\s+euro.*?(?:presso)\s+(.*?)(?:\.|$)' # Caso specifico prelievo
+                    r'ha\s+prelevato\s+([\d.,]+)\s+euro.*?(?:presso)\s+(.*?)(?:\.|$)'
                 ]
-
-                # PATTERN PER LE ENTRATE (Accrediti, Bonifici in entrata)
+                # Regex Entrate
                 regex_entrate = [
                     r'(?:accredito|bonifico).*?di\s+([\d.,]+)\s+euro.*?(?:per|da|a favore di)\s+(.*?)(?:\.|$)',
                     r'hai\s+ricevuto\s+([\d.,]+)\s+euro\s+da\s+(.*?)(?:\.|$)'
@@ -128,24 +121,21 @@ def scarica_spese_da_gmail():
                     match = re.search(rx, corpo_clean, re.IGNORECASE)
                     if match:
                         importo_str = match.group(1)
-                        # Se riesce a catturare la descrizione bene, altrimenti usa il soggetto
                         desc_temp = match.group(2).strip() if len(match.groups()) > 1 else soggetto
-                        
                         importo = float(importo_str.replace('.', '').replace(',', '.'))
                         tipo = "Uscita"
                         descrizione = desc_temp
                         categoria_suggerita = trova_categoria_smart(descrizione, CAT_USCITE)
                         trovato = True
-                        break # Trovato! Smetti di cercare
+                        break 
 
-                # 2. SE NON È USCITA, PROVA ENTRATE
+                # 2. PROVA ENTRATE
                 if not trovato:
                     for rx in regex_entrate:
                         match = re.search(rx, corpo_clean, re.IGNORECASE)
                         if match:
                             importo_str = match.group(1)
                             desc_temp = match.group(2).strip() if len(match.groups()) > 1 else soggetto
-                            
                             importo = float(importo_str.replace('.', '').replace(',', '.'))
                             tipo = "Entrata"
                             descrizione = desc_temp
@@ -164,15 +154,23 @@ def scarica_spese_da_gmail():
                         "Mese": msg.date.strftime('%b-%y'),
                         "Firma": firma
                     })
+                else:
+                    # Mail Widiba trovata ma non capita -> DEBUG
+                    mail_scartate.append({
+                        "Data": msg.date.strftime("%Y-%m-%d"),
+                        "Soggetto": soggetto,
+                        "Snippet": corpo_clean[:100] + "..."
+                    })
                     
     except Exception as e:
         st.error(f"Errore lettura mail: {e}")
         
-    return pd.DataFrame(nuove_transazioni)
+    return pd.DataFrame(nuove_transazioni), pd.DataFrame(mail_scartate)
 
-# --- INTERFACCIA UTENTE ---
-st.title("☁️ Bilancio 2026 - Versione Aspiratutto")
+# --- INIZIO UI ---
+st.title("☁️ Piano Pluriennale 2026")
 
+# Carica DB completo
 try:
     df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(7)), ttl=0)
 except:
@@ -180,101 +178,152 @@ except:
 
 df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
 
-if "df_preview_entrate" not in st.session_state:
-    st.session_state["df_preview_entrate"] = pd.DataFrame()
-if "df_preview_uscite" not in st.session_state:
-    st.session_state["df_preview_uscite"] = pd.DataFrame()
+# Struttura a TAB
+tab1, tab2 = st.tabs(["📥 NUOVE & IMPORTA", "🗂 STORICO & MODIFICA"])
 
-# TASTO CERCA
-if st.button("🔎 CERCA TUTTE LE TRANSAZIONI (Ultime 100 mail)", type="primary"):
-    with st.spinner("Analisi approfondita mail Widiba..."):
-        df_mail = scarica_spese_da_gmail()
+# ==========================================
+# TAB 1: IMPORTAZIONE E AGGIUNTA
+# ==========================================
+with tab1:
+    col_a, col_b = st.columns([1, 2])
+    
+    # 1. SEZIONE GMAIL
+    with col_a:
+        st.markdown("### 1. Da Gmail")
+        if st.button("🔎 Cerca Nuove Mail", type="primary"):
+            with st.spinner("Analisi mail in corso..."):
+                df_mail, df_scartate = scarica_spese_da_gmail()
+                
+                # Salva in sessione per non perderle al refresh
+                st.session_state["df_mail_found"] = df_mail
+                st.session_state["df_mail_discarded"] = df_scartate
+
+        # Visualizza Mail Scartate (Debug)
+        if "df_mail_discarded" in st.session_state and not st.session_state["df_mail_discarded"].empty:
+            with st.expander("⚠️ Mail Widiba ignorate (Debug)", expanded=False):
+                st.warning("Queste mail contengono 'Widiba' ma lo script non ha trovato importi chiari.")
+                st.dataframe(st.session_state["df_mail_discarded"], hide_index=True)
+
+    # 2. LOGICA DI UNIONE (MAIL + MANUALE)
+    with col_b:
+        st.markdown("### 2. Revisione & Manuale")
         
-        if not df_mail.empty:
+        # Recupera mail trovate
+        df_mail_view = pd.DataFrame()
+        if "df_mail_found" in st.session_state and not st.session_state["df_mail_found"].empty:
+            # Filtra quelle già nel DB
             if "Firma" in df_cloud.columns:
                 firme_esistenti = df_cloud["Firma"].astype(str).tolist()
-                df_nuove = df_mail[~df_mail["Firma"].astype(str).isin(firme_esistenti)]
+                df_mail_view = st.session_state["df_mail_found"][
+                    ~st.session_state["df_mail_found"]["Firma"].astype(str).isin(firme_esistenti)
+                ]
             else:
-                df_nuove = df_mail 
+                df_mail_view = st.session_state["df_mail_found"]
             
-            if not df_nuove.empty:
-                st.session_state["df_preview_entrate"] = df_nuove[df_nuove["Tipo"] == "Entrata"]
-                st.session_state["df_preview_uscite"] = df_nuove[df_nuove["Tipo"] == "Uscita"]
-                st.toast(f"Trovate {len(df_nuove)} nuove operazioni!", icon="🔥")
+            if not df_mail_view.empty:
+                st.info(f"Trovate {len(df_mail_view)} nuove transazioni da Gmail.")
             else:
-                st.info("Nessuna transazione *nuova* trovata.")
-        else:
-            st.warning("Nessuna mail Widiba con importi trovata nelle ultime 100.")
+                st.success("Tutte le mail trovate sono già nel DB.")
 
-has_data = not st.session_state["df_preview_entrate"].empty or not st.session_state["df_preview_uscite"].empty
+        # -- TABELLA COMBINATA (MAIL + SPAZIO PER INSERIMENTO MANUALE) --
+        # Creiamo un dataframe vuoto per il manuale se non esiste
+        if "df_manual_entry" not in st.session_state:
+            st.session_state["df_manual_entry"] = pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria"])
 
-if has_data:
-    st.divider()
-    
-    # ENTRATE
-    df_entrate_edit = pd.DataFrame()
-    if not st.session_state["df_preview_entrate"].empty:
-        st.success("💰 ENTRATE")
-        df_entrate_edit = st.data_editor(
-            st.session_state["df_preview_entrate"],
-            column_config={
-                "Categoria": st.column_config.SelectboxColumn(
-                    "Categoria Entrata",
-                    options=CAT_ENTRATE,
-                    required=True
-                )
-            },
-            use_container_width=True,
-            key="edit_entrate",
-            hide_index=True
-        )
-
-    # USCITE
-    df_uscite_edit = pd.DataFrame()
-    if not st.session_state["df_preview_uscite"].empty:
-        st.error("💸 USCITE")
-        df_uscite_edit = st.data_editor(
-            st.session_state["df_preview_uscite"],
-            column_config={
-                "Categoria": st.column_config.SelectboxColumn(
-                    "Categoria Spesa",
-                    options=CAT_USCITE,
-                    required=True
-                )
-            },
-            use_container_width=True,
-            key="edit_uscite",
-            hide_index=True
-        )
-
-    st.markdown("---")
-    
-    col1, col2 = st.columns([1, 1])
-    
-    if col1.button("💾 SALVA TUTTO", type="primary", use_container_width=True):
-        liste_da_unire = []
-        if not df_entrate_edit.empty: liste_da_unire.append(df_entrate_edit)
-        if not df_uscite_edit.empty: liste_da_unire.append(df_uscite_edit)
+        # Uniamo visualmente: Mail (non editabili se non categoria) + Manuali (editabili)
+        # Per semplicità, usiamo un unico data_editor popolato con le mail, 
+        # e con num_rows="dynamic" per aggiungerne altre a mano.
         
-        if liste_da_unire:
-            df_final = pd.concat([df_cloud, pd.concat(liste_da_unire)], ignore_index=True)
-            df_final["Data"] = pd.to_datetime(df_final["Data"], errors='coerce')
-            df_final = df_final.sort_values("Data", ascending=False)
-            df_final["Data"] = df_final["Data"].dt.strftime("%Y-%m-%d")
-            
-            conn.update(worksheet="DB_TRANSAZIONI", data=df_final)
-            
-            st.session_state["df_preview_entrate"] = pd.DataFrame()
-            st.session_state["df_preview_uscite"] = pd.DataFrame()
-            st.balloons()
-            st.success("✅ Salvataggio riuscito!")
-            st.rerun()
+        # Prepariamo il DF di partenza
+        df_input = df_mail_view.copy() if not df_mail_view.empty else pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"])
+        
+        # Se vuoto, metti almeno una riga vuota d'esempio o lascia pulito
+        if df_input.empty:
+            df_input = pd.DataFrame([
+                {"Data": datetime.now().date(), "Descrizione": "Spesa contanti", "Importo": 0.0, "Tipo": "Uscita", "Categoria": "DA VERIFICARE"}
+            ])
 
-    if col2.button("❌ Annulla"):
-        st.session_state["df_preview_entrate"] = pd.DataFrame()
-        st.session_state["df_preview_uscite"] = pd.DataFrame()
+        st.caption("Modifica le categorie suggerite o aggiungi righe manualmente in fondo.")
+        
+        edited_df = st.data_editor(
+            df_input,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "Categoria": st.column_config.SelectboxColumn(options=CAT_USCITE + CAT_ENTRATE, required=True),
+                "Tipo": st.column_config.SelectboxColumn(options=["Entrata", "Uscita"], required=True),
+                "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True),
+                "Importo": st.column_config.NumberColumn(format="%.2f €")
+            },
+            key="editor_nuovi_dati"
+        )
+
+        # SALVATAGGIO NUOVI DATI
+        if st.button("💾 SALVA NUOVI DATI NEL CLOUD", type="primary", use_container_width=True):
+            if not edited_df.empty:
+                # Pulizia dati prima del salvataggio
+                to_save = edited_df.copy()
+                
+                # Genera Mese e Firma se mancano (per le righe manuali)
+                to_save["Data"] = pd.to_datetime(to_save["Data"])
+                to_save["Mese"] = to_save["Data"].dt.strftime('%b-%y')
+                
+                # Funzione per generare firma se manca
+                def ensure_firma(row):
+                    if pd.isna(row.get("Firma")) or str(row.get("Firma")) == "nan":
+                        # Firma casuale per i manuali
+                        return f"MAN-{row['Data'].strftime('%Y%m%d')}-{uuid.uuid4().hex[:6]}"
+                    return row["Firma"]
+                
+                to_save["Firma"] = to_save.apply(ensure_firma, axis=1)
+                
+                # Concatena con il DB esistente
+                df_final = pd.concat([df_cloud, to_save], ignore_index=True)
+                
+                # Ordina e formatta
+                df_final = df_final.sort_values("Data", ascending=False)
+                df_final["Data"] = df_final["Data"].dt.strftime("%Y-%m-%d")
+                
+                # Scrivi
+                conn.update(worksheet="DB_TRANSAZIONI", data=df_final)
+                
+                # Pulisci sessione
+                st.session_state["df_mail_found"] = pd.DataFrame()
+                st.toast("Dati salvati con successo!", icon="✅")
+                st.balloons()
+                st.rerun()
+
+# ==========================================
+# TAB 2: MODIFICA STORICO
+# ==========================================
+with tab2:
+    st.markdown("### 🗂 Modifica Database Completo")
+    st.warning("⚠️ Attenzione: le modifiche fatte qui sovrascrivono direttamente il database online.")
+    
+    # Editor completo
+    df_storico_edited = st.data_editor(
+        df_cloud,
+        num_rows="dynamic", # Permette anche di cancellare o aggiungere qui
+        use_container_width=True,
+        height=600,
+        column_config={
+            "Categoria": st.column_config.SelectboxColumn(options=sorted(list(set(CAT_USCITE + CAT_ENTRATE))), required=True),
+            "Tipo": st.column_config.SelectboxColumn(options=["Entrata", "Uscita"], required=True),
+            "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True),
+            "Importo": st.column_config.NumberColumn(format="%.2f €")
+        },
+        key="editor_storico"
+    )
+    
+    col_s1, col_s2 = st.columns([1,4])
+    if col_s1.button("🔄 AGGIORNA STORICO", type="primary"):
+        # Logica di salvataggio storico
+        df_to_update = df_storico_edited.copy()
+        df_to_update["Data"] = pd.to_datetime(df_to_update["Data"]).dt.strftime("%Y-%m-%d")
+        
+        conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
+        st.success("Database aggiornato correttamnte!")
         st.rerun()
 
 st.divider()
-st.caption("Ultimi movimenti salvati:")
-st.dataframe(df_cloud.head(5), use_container_width=True)
+st.caption(f"Totale righe nel DB: {len(df_cloud)}")
