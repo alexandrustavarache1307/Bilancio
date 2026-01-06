@@ -153,12 +153,11 @@ def scarica_spese_da_gmail():
                         "Firma": firma
                     })
                 else:
-                    # Mail Widiba ma non capita -> SCARTATA
                     mail_scartate.append({
                         "Data": msg.date.strftime("%Y-%m-%d"),
-                        "Descrizione": soggetto, # Usiamo il soggetto come descrizione base
-                        "Importo": 0.0, # Importo 0 da compilare a mano
-                        "Tipo": "Uscita", # Default Uscita
+                        "Descrizione": soggetto,
+                        "Importo": 0.0,
+                        "Tipo": "Uscita",
                         "Categoria": "DA VERIFICARE",
                         "Mese": msg.date.strftime('%b-%y'),
                         "Firma": f"ERR-{msg.date.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6]}"
@@ -169,10 +168,22 @@ def scarica_spese_da_gmail():
         
     return pd.DataFrame(nuove_transazioni), pd.DataFrame(mail_scartate)
 
+# --- FUNZIONE GENERAZIONE PIVOT ---
+def crea_prospetto(df, index_col, columns_col, agg_func='sum'):
+    if df.empty: return pd.DataFrame()
+    pivot = df.pivot_table(index=index_col, columns=columns_col, values='Importo', aggfunc=agg_func, fill_value=0)
+    # Totali riga
+    pivot["TOTALE"] = pivot.sum(axis=1)
+    # Ordina per totale decrescente
+    pivot = pivot.sort_values("TOTALE", ascending=False)
+    # Totali colonna
+    pivot.loc["TOTALE"] = pivot.sum()
+    return pivot
+
 # --- INIZIO UI ---
 st.title("☁️ Piano Pluriennale 2026")
 
-# Carica DB completo
+# Carica DB
 try:
     df_cloud = conn.read(worksheet="DB_TRANSAZIONI", usecols=list(range(7)), ttl=0)
 except:
@@ -180,19 +191,19 @@ except:
 
 df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
 
-# Inizializza session state per le tabelle
+# Session State
 if "df_mail_found" not in st.session_state: st.session_state["df_mail_found"] = pd.DataFrame()
 if "df_mail_discarded" not in st.session_state: st.session_state["df_mail_discarded"] = pd.DataFrame()
 if "df_manual_entry" not in st.session_state: st.session_state["df_manual_entry"] = pd.DataFrame(columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"])
 
-tab1, tab2 = st.tabs(["📥 NUOVE & IMPORTA", "🗂 STORICO & MODIFICA"])
+# TABS
+tab1, tab2, tab3 = st.tabs(["📥 NUOVE & IMPORTA", "📊 REPORT & PROSPETTI", "🗂 STORICO & MODIFICA"])
 
 # ==========================================
-# TAB 1: IMPORTAZIONE E AGGIUNTA
+# TAB 1: IMPORTAZIONE
 # ==========================================
 with tab1:
     col_search, col_actions = st.columns([1, 4])
-    
     with col_search:
         if st.button("🔎 Cerca Nuove Mail", type="primary"):
             with st.spinner("Analisi mail in corso..."):
@@ -202,20 +213,17 @@ with tab1:
     
     st.divider()
 
-    # --- 1. GESTIONE MAIL SCARTATE (RECUPERO) ---
+    # Recupero Scartate
     if not st.session_state["df_mail_discarded"].empty:
         with st.expander(f"⚠️ Ci sono {len(st.session_state['df_mail_discarded'])} mail Widiba non riconosciute", expanded=True):
             st.dataframe(st.session_state["df_mail_discarded"][["Data", "Descrizione"]], use_container_width=True, hide_index=True)
-            
             if st.button("⬇️ Recupera e Correggi Manualmente"):
-                # Sposta le scartate nel calderone "Manuale" per essere corrette
                 recuperate = st.session_state["df_mail_discarded"].copy()
                 st.session_state["df_manual_entry"] = pd.concat([st.session_state["df_manual_entry"], recuperate], ignore_index=True)
-                # Svuota le scartate
                 st.session_state["df_mail_discarded"] = pd.DataFrame()
                 st.rerun()
 
-    # --- 2. FILTRO DUPLICATI AUTOMATICO ---
+    # Visualizzazione e Editor
     df_view_entrate = pd.DataFrame()
     df_view_uscite = pd.DataFrame()
     
@@ -225,135 +233,173 @@ with tab1:
             firme_esistenti = df_cloud["Firma"].astype(str).tolist()
             df_clean = df_clean[~df_clean["Firma"].astype(str).isin(firme_esistenti)]
         
-        # FIX: Converto Data in datetime per editor
         df_clean["Data"] = pd.to_datetime(df_clean["Data"], errors='coerce')
-        
-        # DIVIDIAMO ENTRATE E USCITE
         df_view_entrate = df_clean[df_clean["Tipo"] == "Entrata"]
         df_view_uscite = df_clean[df_clean["Tipo"] == "Uscita"]
 
-    # --- 3. EDITOR SEPARATI ---
-    
-    # ENTRATE (Verde)
-    st.markdown("##### 💰 Nuove Entrate Trovate")
-    if df_view_entrate.empty:
-        st.info("Nessuna nuova entrata trovata.")
-    else:
+    st.markdown("##### 💰 Nuove Entrate")
+    if not df_view_entrate.empty:
         edited_entrate = st.data_editor(
             df_view_entrate,
-            column_config={
-                "Categoria": st.column_config.SelectboxColumn(options=CAT_ENTRATE, required=True), # Solo cat entrate
-                "Tipo": st.column_config.Column(disabled=True),
-                "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True),
-                "Importo": st.column_config.NumberColumn(format="%.2f €")
-            },
-            key="edit_entrate_mail",
-            use_container_width=True
+            column_config={"Categoria": st.column_config.SelectboxColumn(options=CAT_ENTRATE, required=True), "Tipo": st.column_config.Column(disabled=True), "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True), "Importo": st.column_config.NumberColumn(format="%.2f €")},
+            key="edit_entrate_mail", use_container_width=True
         )
-
-    # USCITE (Rosso)
-    st.markdown("##### 💸 Nuove Uscite Trovate")
-    if df_view_uscite.empty:
-        st.info("Nessuna nuova uscita trovata.")
     else:
+        st.info("Nessuna nuova entrata.")
+
+    st.markdown("##### 💸 Nuove Uscite")
+    if not df_view_uscite.empty:
         edited_uscite = st.data_editor(
             df_view_uscite,
-            column_config={
-                "Categoria": st.column_config.SelectboxColumn(options=CAT_USCITE, required=True), # Solo cat uscite
-                "Tipo": st.column_config.Column(disabled=True),
-                "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True),
-                "Importo": st.column_config.NumberColumn(format="%.2f €")
-            },
-            key="edit_uscite_mail",
-            use_container_width=True
+            column_config={"Categoria": st.column_config.SelectboxColumn(options=CAT_USCITE, required=True), "Tipo": st.column_config.Column(disabled=True), "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True), "Importo": st.column_config.NumberColumn(format="%.2f €")},
+            key="edit_uscite_mail", use_container_width=True
         )
+    else:
+        st.info("Nessuna nuova uscita.")
 
     st.markdown("---")
-    
-    # --- 4. INSERIMENTO MANUALE / CORREZIONI (Qui finiscono anche le scartate) ---
-    st.markdown("##### ✍️ Inserimento Manuale / Correzione Scartate")
-    st.caption("Aggiungi qui spese contanti o correggi le mail importate con importo 0.")
-    
-    # Se vuoto, aggiungi una riga vuota
+    st.markdown("##### ✍️ Manuale / Correzioni")
     if st.session_state["df_manual_entry"].empty:
-        st.session_state["df_manual_entry"] = pd.DataFrame([
-            {"Data": datetime.now(), "Descrizione": "Spesa contanti", "Importo": 0.0, "Tipo": "Uscita", "Categoria": "DA VERIFICARE", "Firma": "", "Mese": ""}
-        ])
+        st.session_state["df_manual_entry"] = pd.DataFrame([{"Data": datetime.now(), "Descrizione": "Spesa contanti", "Importo": 0.0, "Tipo": "Uscita", "Categoria": "DA VERIFICARE", "Firma": "", "Mese": ""}])
     
-    # Converti data
     st.session_state["df_manual_entry"]["Data"] = pd.to_datetime(st.session_state["df_manual_entry"]["Data"], errors='coerce')
-
     edited_manual = st.data_editor(
         st.session_state["df_manual_entry"],
         num_rows="dynamic",
-        column_config={
-            "Categoria": st.column_config.SelectboxColumn(options=sorted(CAT_USCITE + CAT_ENTRATE), required=True), # Qui misto perché manuale
-            "Tipo": st.column_config.SelectboxColumn(options=["Uscita", "Entrata"], required=True),
-            "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True),
-            "Importo": st.column_config.NumberColumn(format="%.2f €")
-        },
-        key="edit_manual",
-        use_container_width=True
+        column_config={"Categoria": st.column_config.SelectboxColumn(options=sorted(CAT_USCITE + CAT_ENTRATE), required=True), "Tipo": st.column_config.SelectboxColumn(options=["Uscita", "Entrata"], required=True), "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True), "Importo": st.column_config.NumberColumn(format="%.2f €")},
+        key="edit_manual", use_container_width=True
     )
 
-    # --- 5. SALVATAGGIO UNIFICATO ---
     if st.button("💾 SALVA TUTTO NEL CLOUD", type="primary", use_container_width=True):
         da_salvare = []
-        
-        # Recupera Entrate Modificate (se presenti)
-        if not df_view_entrate.empty:
-             # Nota: Streamlit non restituisce il DF modificato direttamente se è in un if, 
-             # ma 'edited_entrate' è la variabile che contiene il risultato dell'editor
-             da_salvare.append(edited_entrate)
-        
-        # Recupera Uscite Modificate (se presenti)
-        if not df_view_uscite.empty:
-             da_salvare.append(edited_uscite)
-             
-        # Recupera Manuali (se validi, importo > 0 o descrizione cambiata)
+        if not df_view_entrate.empty: da_salvare.append(edited_entrate)
+        if not df_view_uscite.empty: da_salvare.append(edited_uscite)
         if not edited_manual.empty:
-            # Filtriamo le righe vuote o di default se non toccate
             valid_manual = edited_manual[edited_manual["Importo"] > 0]
             if not valid_manual.empty:
-                # Rigenera firme e mese per le manuali
                 valid_manual["Data"] = pd.to_datetime(valid_manual["Data"])
                 valid_manual["Mese"] = valid_manual["Data"].dt.strftime('%b-%y')
-                valid_manual["Firma"] = valid_manual.apply(
-                    lambda x: x["Firma"] if x["Firma"] and str(x["Firma"]) != "nan" else f"MAN-{x['Data'].strftime('%Y%m%d')}-{uuid.uuid4().hex[:6]}", 
-                    axis=1
-                )
+                valid_manual["Firma"] = valid_manual.apply(lambda x: x["Firma"] if x["Firma"] and str(x["Firma"]) != "nan" else f"MAN-{x['Data'].strftime('%Y%m%d')}-{uuid.uuid4().hex[:6]}", axis=1)
                 da_salvare.append(valid_manual)
         
         if da_salvare:
             df_new_total = pd.concat(da_salvare, ignore_index=True)
-            
-            # Unisci al Cloud
             df_final = pd.concat([df_cloud, df_new_total], ignore_index=True)
             df_final["Data"] = pd.to_datetime(df_final["Data"])
             df_final = df_final.sort_values("Data", ascending=False)
             df_final["Data"] = df_final["Data"].dt.strftime("%Y-%m-%d")
-            
             conn.update(worksheet="DB_TRANSAZIONI", data=df_final)
-            
-            # Reset stato
             st.session_state["df_mail_found"] = pd.DataFrame()
             st.session_state["df_manual_entry"] = pd.DataFrame()
             st.session_state["df_mail_discarded"] = pd.DataFrame()
-            
             st.balloons()
             st.success("✅ Tutto salvato correttamente!")
             st.rerun()
-        else:
-            st.warning("Nessun dato da salvare.")
 
 # ==========================================
-# TAB 2: MODIFICA STORICO
+# TAB 2: REPORT & PROSPETTI (NUOVO!)
 # ==========================================
 with tab2:
-    st.markdown("### 🗂 Modifica Database Completo")
-    
-    df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
+    if df_cloud.empty:
+        st.warning("Nessun dato nel database.")
+    else:
+        # Prepara dati per analisi
+        df_analysis = df_cloud.copy()
+        df_analysis["Anno"] = df_analysis["Data"].dt.year
+        df_analysis["MeseNum"] = df_analysis["Data"].dt.month
+        df_analysis["Trimestre"] = "Q" + df_analysis["Data"].dt.quarter.astype(str)
+        df_analysis["Semestre"] = df_analysis["MeseNum"].apply(lambda x: "H1" if x <= 6 else "H2")
 
+        # Filtro Anno Laterale
+        anni_disponibili = sorted(df_analysis["Anno"].unique(), reverse=True)
+        anno_sel = st.sidebar.selectbox("📅 Seleziona Anno Report", anni_disponibili)
+        
+        df_anno = df_analysis[df_analysis["Anno"] == anno_sel]
+
+        # --- KPI ROW ---
+        tot_entrate = df_anno[df_anno["Tipo"] == "Entrata"]["Importo"].sum()
+        tot_uscite = df_anno[df_anno["Tipo"] == "Uscita"]["Importo"].sum()
+        saldo = tot_entrate - tot_uscite
+        risparmio_pct = (saldo / tot_entrate * 100) if tot_entrate > 0 else 0
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Entrate Totali", f"{tot_entrate:,.2f} €", border=True)
+        k2.metric("Uscite Totali", f"{tot_uscite:,.2f} €", delta_color="inverse", border=True) # Rosso non disponibile default su metric normale ma usiamo delta dopo
+        k3.metric("Saldo Netto", f"{saldo:,.2f} €", delta=f"{saldo:,.2f} €", border=True)
+        k4.metric("% Risparmio", f"{risparmio_pct:.1f}%", border=True)
+
+        st.divider()
+
+        # --- SOTTOTAB PER VISTE TEMPORALI ---
+        sub_t1, sub_t2, sub_t3, sub_t4 = st.tabs(["📅 Mensile", "📊 Trimestrale", "🗓 Semestrale", "📆 Annuale"])
+
+        # 1. MENSILE
+        with sub_t1:
+            st.subheader(f"Dettaglio Mensile {anno_sel}")
+            
+            # Pivot Entrate
+            st.markdown("**ENTRATE**")
+            df_e = df_anno[df_anno["Tipo"] == "Entrata"]
+            pivot_e = crea_prospetto(df_e, "Categoria", "MeseNum")
+            # Rinomina colonne mesi (1 -> Gen, 2 -> Feb...)
+            mesi_map = {1:'Gen', 2:'Feb', 3:'Mar', 4:'Apr', 5:'Mag', 6:'Giu', 7:'Lug', 8:'Ago', 9:'Set', 10:'Ott', 11:'Nov', 12:'Dic'}
+            pivot_e = pivot_e.rename(columns=mesi_map)
+            st.dataframe(pivot_e.style.format("{:.2f} €").background_gradient(cmap="Greens", axis=None), use_container_width=True)
+
+            # Pivot Uscite
+            st.markdown("**USCITE**")
+            df_u = df_anno[df_anno["Tipo"] == "Uscita"]
+            pivot_u = crea_prospetto(df_u, "Categoria", "MeseNum")
+            pivot_u = pivot_u.rename(columns=mesi_map)
+            st.dataframe(pivot_u.style.format("{:.2f} €").background_gradient(cmap="Reds", axis=None), use_container_width=True)
+
+        # 2. TRIMESTRALE
+        with sub_t2:
+            st.subheader(f"Dettaglio Trimestrale {anno_sel}")
+            col_t1, col_t2 = st.columns(2)
+            
+            with col_t1:
+                st.caption("Entrate per Trimestre")
+                pivot_eq = crea_prospetto(df_e, "Categoria", "Trimestre")
+                st.dataframe(pivot_eq.style.format("{:.2f} €"), use_container_width=True)
+            
+            with col_t2:
+                st.caption("Uscite per Trimestre")
+                pivot_uq = crea_prospetto(df_u, "Categoria", "Trimestre")
+                st.dataframe(pivot_uq.style.format("{:.2f} €").background_gradient(cmap="Reds"), use_container_width=True)
+
+        # 3. SEMESTRALE
+        with sub_t3:
+            st.subheader(f"Dettaglio Semestrale {anno_sel}")
+            # Qui facciamo un pivot unico Saldo
+            pivot_us = crea_prospetto(df_u, "Categoria", "Semestre")
+            st.dataframe(pivot_us.style.format("{:.2f} €").highlight_max(axis=0, color='pink'), use_container_width=True)
+
+        # 4. ANNUALE (Confronto categorie)
+        with sub_t4:
+            st.subheader("Riepilogo Categorie Anno")
+            col_a1, col_a2 = st.columns(2)
+            
+            # Top categorie uscite
+            top_uscite = df_u.groupby("Categoria")["Importo"].sum().sort_values(ascending=False).head(10)
+            with col_a1:
+                st.markdown("**Top 10 Spese**")
+                st.bar_chart(top_uscite, color="#ff4b4b", horizontal=True) # Rosso
+            
+            # Trend mensile (Entrate vs Uscite)
+            monthly_trend = df_anno.groupby(["MeseNum", "Tipo"])["Importo"].sum().unstack().fillna(0)
+            monthly_trend = monthly_trend.rename(index=mesi_map)
+            with col_a2:
+                st.markdown("**Andamento Mensile**")
+                st.bar_chart(monthly_trend, color=["#2ecc71", "#ff4b4b"]) # Verde e Rosso
+
+# ==========================================
+# TAB 3: MODIFICA STORICO
+# ==========================================
+with tab3:
+    st.markdown("### 🗂 Modifica Database Completo")
+    df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
+    
     df_storico_edited = st.data_editor(
         df_cloud,
         num_rows="dynamic",
