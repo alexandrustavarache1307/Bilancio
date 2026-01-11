@@ -58,13 +58,15 @@ MAPPA_KEYWORD = {
     "telepass": "VARIE", 
     "amazon": "VARIE", 
     "paypal": "PERSONALE",
-    "netflix": "SVAGO", 
-    "spotify": "SVAGO", 
-    "dazn": "SVAGO", 
-    "disney": "SVAGO",
-    "farmacia": "SALUTE", 
-    "medico": "SALUTE", 
-    "ticket": "SALUTE"
+    "netflix": "VARIE", 
+    "spotify": "SPOTIFY", 
+    "dazn": "VARIE", 
+    "disney": "VARIE",
+    "farmacia": "VARIE", 
+    "medico": "VARIE", 
+    "ticket": "VARIE",
+    "ICM": "CARBURANTE",
+    "TAMOIL": "CARBURANTE"
 }
 
 # ==============================================================================
@@ -211,7 +213,7 @@ def trova_categoria_smart(descrizione, lista_categorie_disponibili):
     return "DA VERIFICARE"
 
 def scarica_spese_da_gmail():
-    """Legge la mail di Widiba e cerca transazioni."""
+    """Legge la mail di Widiba, riconosce Stipendio e PayPal come Entrate, non segna come letto."""
     nuove_transazioni = []
     mail_scartate = [] 
     
@@ -225,36 +227,43 @@ def scarica_spese_da_gmail():
     
     try:
         with MailBox(server).login(user, pwd) as mailbox:
-            # Prende le ultime 50 mail
-            for msg in mailbox.fetch(limit=50, reverse=True): 
+            # mark_seen=False -> NON segna la mail come letta
+            for msg in mailbox.fetch(limit=50, reverse=True, mark_seen=False): 
                 
                 soggetto = msg.subject
                 corpo = msg.text or msg.html
                 corpo_clean = " ".join(corpo.split())
                 
-                # Filtro: deve esserci 'widiba'
+                # Filtro: deve esserci 'widiba' (case insensitive)
                 if "widiba" not in corpo_clean.lower() and "widiba" not in soggetto.lower():
-                     continue
+                      continue
 
                 importo = 0.0
-                tipo = "Uscita"
+                tipo = "Uscita" # Default, poi verifichiamo se è Entrata
                 descrizione = "Transazione Generica"
                 categoria_suggerita = "DA VERIFICARE"
                 trovato = False
 
-                # Regex Uscite
+                # --- 1. REGEX USCITE (Pagamenti, Prelievi) ---
                 regex_uscite = [
                     r'(?:pagamento|prelievo|addebito|bonifico).*?di\s+([\d.,]+)\s+euro.*?(?:presso|per|a favore di|su)\s+(.*?)(?:\.|$)',
                     r'ha\s+prelevato\s+([\d.,]+)\s+euro.*?(?:presso)\s+(.*?)(?:\.|$)'
                 ]
                 
-                # Regex Entrate
-                regex_entrate = [
-                    r'(?:accredito|bonifico).*?di\s+([\d.,]+)\s+euro.*?(?:per|da|a favore di)\s+(.*?)(?:\.|$)',
-                    r'hai\s+ricevuto\s+([\d.,]+)\s+euro\s+da\s+(.*?)(?:\.|$)'
+                # --- 2. REGEX ENTRATE (Accrediti, Stipendio, PayPal) ---
+                # Struttura: (Regex, Indice del Gruppo Importo, Indice del Gruppo Descrizione)
+                regex_entrate_data = [
+                    # A. Caso Standard: "Accredito di 100 euro per..." (Importo prima, Descrizione dopo)
+                    (r'(?:accredito|bonifico).*?di\s+([\d.,]+)\s+euro.*?(?:per|da|a favore di)\s+(.*?)(?:\.|$)', 1, 2),
+                    
+                    # B. Caso Stipendio/Emolumenti: "Accredito per Emolumenti... di 1500 euro" (Descrizione prima, Importo dopo)
+                    (r'accredito\s+per\s+(.*?)\s+di\s+([\d.,]+)\s+euro', 2, 1),
+                    
+                    # C. Caso Generico: "Hai ricevuto 50 euro da..."
+                    (r'hai\s+ricevuto\s+([\d.,]+)\s+euro\s+da\s+(.*?)(?:\.|$)'
                 ]
 
-                # Ciclo su Regex Uscite
+                # A. Cerca nelle USCITE
                 for rx in regex_uscite:
                     match = re.search(rx, corpo_clean, re.IGNORECASE)
                     if match:
@@ -267,21 +276,32 @@ def scarica_spese_da_gmail():
                         trovato = True
                         break 
 
-                # Ciclo su Regex Entrate (se non trovato prima)
+                # B. Cerca nelle ENTRATE (se non è un'uscita)
                 if not trovato:
-                    for rx in regex_entrate:
-                        match = re.search(rx, corpo_clean, re.IGNORECASE)
+                    for rx_data in regex_entrate_data:
+                        rx_pattern = rx_data[0]
+                        idx_imp = rx_data[1]
+                        idx_desc = rx_data[2]
+                        
+                        match = re.search(rx_pattern, corpo_clean, re.IGNORECASE)
                         if match:
-                            importo_str = match.group(1)
-                            desc_temp = match.group(2).strip()
+                            importo_str = match.group(idx_imp)
+                            desc_temp = match.group(idx_desc).strip()
+                            
                             importo = float(importo_str.replace('.', '').replace(',', '.'))
-                            tipo = "Entrata"
+                            tipo = "Entrata" # Forziamo Entrata
                             descrizione = desc_temp
+                            
+                            # Se c'è scritto "Paypal" nel corpo, aggiungiamolo alla descrizione per chiarezza
+                            # (Ma la categoria resta quella calcolata o DA VERIFICARE)
+                            if "paypal" in corpo_clean.lower():
+                                descrizione = f"PayPal - {descrizione}"
+                                
                             categoria_suggerita = trova_categoria_smart(descrizione, CAT_ENTRATE)
                             trovato = True
                             break
 
-                # Aggiunta alla lista corretta
+                # C. Salvataggio o Scarto
                 if trovato:
                     firma_univoca = f"{msg.date.strftime('%Y%m%d')}-{importo}-{descrizione[:10]}"
                     transazione = {
@@ -289,12 +309,13 @@ def scarica_spese_da_gmail():
                         "Descrizione": descrizione,
                         "Importo": importo,
                         "Tipo": tipo,
-                        "Categoria": categoria_suggerita,
+                        "Categoria": categoria_suggerita, # Sarà DA VERIFICARE se non trova keyword
                         "Mese": msg.date.strftime('%b-%y'),
                         "Firma": firma_univoca
                     }
                     nuove_transazioni.append(transazione)
                 else:
+                    # Se finisce qui, non ha trovato corrispondenza con le regex
                     firma_errore = f"ERR-{msg.date.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6]}"
                     scartata = {
                         "Data": msg.date.strftime("%Y-%m-%d"),
@@ -988,3 +1009,4 @@ with tab_stor:
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
         st.success("Database aggiornato correttamnte!")
         st.rerun()
+
