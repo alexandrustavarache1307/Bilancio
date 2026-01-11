@@ -259,8 +259,8 @@ def scarica_spese_da_gmail():
                     # B. Caso Stipendio/Emolumenti: "Accredito per Emolumenti... di 1500 euro" (Descrizione prima, Importo dopo)
                     (r'accredito\s+per\s+(.*?)\s+di\s+([\d.,]+)\s+euro', 2, 1),
                     
-                    # C. Caso Generico: "Hai ricevuto 50 euro da..."
-                    (r'hai\s+ricevuto\s+([\d.,]+)\s+euro\s+da\s+(.*?)(?:\.|$)'
+                    # C. Caso Generico: "Hai ricevuto 50 euro da..." (CORRETTO QUI)
+                    (r'hai\s+ricevuto\s+([\d.,]+)\s+euro\s+da\s+(.*?)(?:\.|$)', 1, 2)
                 ]
 
                 # A. Cerca nelle USCITE
@@ -293,7 +293,6 @@ def scarica_spese_da_gmail():
                             descrizione = desc_temp
                             
                             # Se c'è scritto "Paypal" nel corpo, aggiungiamolo alla descrizione per chiarezza
-                            # (Ma la categoria resta quella calcolata o DA VERIFICARE)
                             if "paypal" in corpo_clean.lower():
                                 descrizione = f"PayPal - {descrizione}"
                                 
@@ -309,7 +308,7 @@ def scarica_spese_da_gmail():
                         "Descrizione": descrizione,
                         "Importo": importo,
                         "Tipo": tipo,
-                        "Categoria": categoria_suggerita, # Sarà DA VERIFICARE se non trova keyword
+                        "Categoria": categoria_suggerita, 
                         "Mese": msg.date.strftime('%b-%y'),
                         "Firma": firma_univoca
                     }
@@ -332,7 +331,6 @@ def scarica_spese_da_gmail():
         st.error(f"Errore lettura mail: {e}")
         
     return pd.DataFrame(nuove_transazioni), pd.DataFrame(mail_scartate)
-
 def style_delta_standard(val):
     """
     Stile per Entrate e Utile:
@@ -1009,4 +1007,5 @@ with tab_stor:
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
         st.success("Database aggiornato correttamnte!")
         st.rerun()
+
 
