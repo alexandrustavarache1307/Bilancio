@@ -213,7 +213,7 @@ def trova_categoria_smart(descrizione, lista_categorie_disponibili):
     return "DA VERIFICARE"
 
 def scarica_spese_da_gmail():
-    """Legge la mail di Widiba, riconosce Stipendio e PayPal come Entrate, non segna come letto."""
+    """Legge la mail, riconosce Stipendio, PayPal e Rata Auto (tramite IBAN)."""
     nuove_transazioni = []
     mail_scartate = [] 
     
@@ -239,27 +239,21 @@ def scarica_spese_da_gmail():
                       continue
 
                 importo = 0.0
-                tipo = "Uscita" # Default, poi verifichiamo se è Entrata
+                tipo = "Uscita" # Default
                 descrizione = "Transazione Generica"
                 categoria_suggerita = "DA VERIFICARE"
                 trovato = False
 
-                # --- 1. REGEX USCITE (Pagamenti, Prelievi) ---
+                # --- 1. REGEX USCITE ---
                 regex_uscite = [
                     r'(?:pagamento|prelievo|addebito|bonifico).*?di\s+([\d.,]+)\s+euro.*?(?:presso|per|a favore di|su)\s+(.*?)(?:\.|$)',
                     r'ha\s+prelevato\s+([\d.,]+)\s+euro.*?(?:presso)\s+(.*?)(?:\.|$)'
                 ]
                 
-                # --- 2. REGEX ENTRATE (Accrediti, Stipendio, PayPal) ---
-                # Struttura: (Regex, Indice del Gruppo Importo, Indice del Gruppo Descrizione)
+                # --- 2. REGEX ENTRATE ---
                 regex_entrate_data = [
-                    # A. Caso Standard: "Accredito di 100 euro per..." (Importo prima, Descrizione dopo)
                     (r'(?:accredito|bonifico).*?di\s+([\d.,]+)\s+euro.*?(?:per|da|a favore di)\s+(.*?)(?:\.|$)', 1, 2),
-                    
-                    # B. Caso Stipendio/Emolumenti: "Accredito per Emolumenti... di 1500 euro" (Descrizione prima, Importo dopo)
                     (r'accredito\s+per\s+(.*?)\s+di\s+([\d.,]+)\s+euro', 2, 1),
-                    
-                    # C. Caso Generico: "Hai ricevuto 50 euro da..." (CORRETTO QUI)
                     (r'hai\s+ricevuto\s+([\d.,]+)\s+euro\s+da\s+(.*?)(?:\.|$)', 1, 2)
                 ]
 
@@ -272,7 +266,17 @@ def scarica_spese_da_gmail():
                         importo = float(importo_str.replace('.', '').replace(',', '.'))
                         tipo = "Uscita"
                         descrizione = desc_temp
-                        categoria_suggerita = trova_categoria_smart(descrizione, CAT_USCITE)
+                        
+                        # --- MODIFICA SPECIFICA RATA AUTO ---
+                        # Se c'è l'IBAN della rata, sovrascriviamo la descrizione
+                        if "IT77J0338501601100000720458" in corpo_clean:
+                            descrizione = "Rata Auto"
+                            # Se vuoi assegnare una categoria automatica, scommenta la riga sotto:
+                            # categoria_suggerita = "AUTO" o "DEBITI"
+                        
+                        if categoria_suggerita == "DA VERIFICARE":
+                             categoria_suggerita = trova_categoria_smart(descrizione, CAT_USCITE)
+                             
                         trovato = True
                         break 
 
@@ -289,10 +293,9 @@ def scarica_spese_da_gmail():
                             desc_temp = match.group(idx_desc).strip()
                             
                             importo = float(importo_str.replace('.', '').replace(',', '.'))
-                            tipo = "Entrata" # Forziamo Entrata
+                            tipo = "Entrata"
                             descrizione = desc_temp
                             
-                            # Se c'è scritto "Paypal" nel corpo, aggiungiamolo alla descrizione per chiarezza
                             if "paypal" in corpo_clean.lower():
                                 descrizione = f"PayPal - {descrizione}"
                                 
@@ -314,7 +317,6 @@ def scarica_spese_da_gmail():
                     }
                     nuove_transazioni.append(transazione)
                 else:
-                    # Se finisce qui, non ha trovato corrispondenza con le regex
                     firma_errore = f"ERR-{msg.date.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6]}"
                     scartata = {
                         "Data": msg.date.strftime("%Y-%m-%d"),
@@ -1007,5 +1009,6 @@ with tab_stor:
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
         st.success("Database aggiornato correttamnte!")
         st.rerun()
+
 
 
