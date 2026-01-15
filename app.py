@@ -449,8 +449,8 @@ tab_bil, tab_kpi, tab_graf, tab_imp, tab_stor = st.tabs([
 # TAB 1: RIEPILOGO & BILANCIO
 # ==============================================================================
 # --- AGGIUNTA TASTO PRIVACY ---
-    # 1. Gestione dello stato (memoria del bottone)
-    if "nascondi_saldi" not in st.session_state:
+# 1. Gestione dello stato (memoria del bottone)
+if "nascondi_saldi" not in st.session_state:
         st.session_state["nascondi_saldi"] = False
 
     # 2. Il bottone (piccolo, in una colonna stretta)
@@ -469,7 +469,7 @@ tab_bil, tab_kpi, tab_graf, tab_imp, tab_stor = st.tabs([
             return "**** €"
         return f"{valore:,.2f} €"
     # ------------------------------
-with tab_bil:
+    with tab_bil:
     df_budget_b = get_budget_data()
     # Usiamo una copia locale per non toccare il globale
     df_analysis_b = df_cloud.copy()
@@ -1041,6 +1041,7 @@ with tab_stor:
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
         st.success("Database aggiornato correttamnte!")
         st.rerun()
+
 
 
 
