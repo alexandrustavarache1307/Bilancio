@@ -448,6 +448,27 @@ tab_bil, tab_kpi, tab_graf, tab_imp, tab_stor = st.tabs([
 # ==============================================================================
 # TAB 1: RIEPILOGO & BILANCIO
 # ==============================================================================
+# --- AGGIUNTA TASTO PRIVACY ---
+    # 1. Gestione dello stato (memoria del bottone)
+    if "nascondi_saldi" not in st.session_state:
+        st.session_state["nascondi_saldi"] = False
+
+    # 2. Il bottone (piccolo, in una colonna stretta)
+    col_priv, _ = st.columns([1, 8])
+    with col_priv:
+        # Cambia icona e testo in base allo stato
+        icona = "🫣" if st.session_state["nascondi_saldi"] else "👁️"
+        label = "Mostra" if st.session_state["nascondi_saldi"] else "Nascondi"
+        
+        if st.button(f"{icona} {label} Dati"):
+            st.session_state["nascondi_saldi"] = not st.session_state["nascondi_saldi"]
+
+    # 3. Funzione rapida per formattare
+    def fmt_priv(valore):
+        if st.session_state["nascondi_saldi"]:
+            return "**** €"
+        return f"{valore:,.2f} €"
+    # ------------------------------
 with tab_bil:
     df_budget_b = get_budget_data()
     # Usiamo una copia locale per non toccare il globale
@@ -538,15 +559,26 @@ with tab_bil:
     saldo_fin_bud = saldo_ini_bud + utile_bud
     saldo_fin_real = saldo_ini_real + utile_real
 
-    # Display Metriche
+   # Display Metriche (MODIFICATO)
     st.divider()
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("💰 Saldo Iniziale (Reale)", f"{saldo_ini_real:,.2f} €", delta=f"Budget: {saldo_ini_bud:,.2f} €", delta_color="off")
-    m2.metric("📈 Entrate Operative (Reale)", f"{ent_op_real:,.2f} €", delta=f"{(ent_op_real-ent_op_bud):,.2f} € vs Budget", delta_color="normal")
-    m3.metric("📉 Uscite Totali (Reale)", f"{usc_op_real:,.2f} €", delta=f"{(usc_op_real-usc_op_bud):,.2f} € vs Budget", delta_color="inverse")
-    m4.metric("🏁 Saldo Finale (Reale)", f"{saldo_fin_real:,.2f} €", delta=f"Utile: {utile_real:,.2f} €", delta_color="normal")
     
-    st.divider()
+    m1.metric("💰 Saldo Iniziale", 
+              fmt_priv(saldo_ini_real), 
+              delta=None if st.session_state["nascondi_saldi"] else f"Budget: {saldo_ini_bud:,.2f} €")
+              
+    m2.metric("📈 Entrate Operative", 
+              fmt_priv(ent_op_real), 
+              delta=None if st.session_state["nascondi_saldi"] else f"{(ent_op_real-ent_op_bud):,.2f} € vs Budget")
+              
+    m3.metric("📉 Uscite Totali", 
+              fmt_priv(usc_op_real), 
+              delta=None if st.session_state["nascondi_saldi"] else f"{(usc_op_real-usc_op_bud):,.2f} € vs Budget", 
+              delta_color="inverse")
+              
+    m4.metric("🏁 Saldo Finale", 
+              fmt_priv(saldo_fin_real), 
+              delta=None if st.session_state["nascondi_saldi"] else f"Utile: {utile_real:,.2f} €")
 
     col_schemino_sx, col_schemino_dx = st.columns(2)
     
@@ -1009,6 +1041,7 @@ with tab_stor:
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
         st.success("Database aggiornato correttamnte!")
         st.rerun()
+
 
 
 
