@@ -453,7 +453,7 @@ tab_bil, tab_kpi, tab_graf, tab_imp, tab_stor = st.tabs([
 if "nascondi_saldi" not in st.session_state:
         st.session_state["nascondi_saldi"] = False
 
-    # 2. Il bottone (piccolo, in una colonna stretta)
+# 2. Il bottone (piccolo, in una colonna stretta)
     col_priv, _ = st.columns([1, 8])
     with col_priv:
         # Cambia icona e testo in base allo stato
@@ -463,12 +463,12 @@ if "nascondi_saldi" not in st.session_state:
         if st.button(f"{icona} {label} Dati"):
             st.session_state["nascondi_saldi"] = not st.session_state["nascondi_saldi"]
 
-    # 3. Funzione rapida per formattare
+# 3. Funzione rapida per formattare
     def fmt_priv(valore):
         if st.session_state["nascondi_saldi"]:
             return "**** €"
         return f"{valore:,.2f} €"
-    # ------------------------------
+# ------------------------------
     with tab_bil:
     df_budget_b = get_budget_data()
     # Usiamo una copia locale per non toccare il globale
@@ -476,7 +476,7 @@ if "nascondi_saldi" not in st.session_state:
     
     st.markdown("### 🏦 Bilancio di Esercizio")
     
-    # Selettori Periodo
+# Selettori Periodo
     cb1, cb2, cb3 = st.columns(3)
     with cb1:
         lista_anni = sorted(df_analysis_b["Anno"].unique(), reverse=True)
@@ -1041,6 +1041,7 @@ with tab_stor:
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
         st.success("Database aggiornato correttamnte!")
         st.rerun()
+
 
 
 
