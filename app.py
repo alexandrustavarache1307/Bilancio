@@ -448,35 +448,15 @@ tab_bil, tab_kpi, tab_graf, tab_imp, tab_stor = st.tabs([
 # ==============================================================================
 # TAB 1: RIEPILOGO & BILANCIO
 # ==============================================================================
-# --- AGGIUNTA TASTO PRIVACY ---
-# 1. Gestione dello stato (memoria del bottone)
-if "nascondi_saldi" not in st.session_state:
-        st.session_state["nascondi_saldi"] = False
-
-# 2. Il bottone (piccolo, in una colonna stretta)
-    col_priv, _ = st.columns([1, 8])
-    with col_priv:
-        # Cambia icona e testo in base allo stato
-        icona = "🫣" if st.session_state["nascondi_saldi"] else "👁️"
-        label = "Mostra" if st.session_state["nascondi_saldi"] else "Nascondi"
-        
-        if st.button(f"{icona} {label} Dati"):
-            st.session_state["nascondi_saldi"] = not st.session_state["nascondi_saldi"]
-
-# 3. Funzione rapida per formattare
-    def fmt_priv(valore):
-        if st.session_state["nascondi_saldi"]:
-            return "**** €"
-        return f"{valore:,.2f} €"
-# ------------------------------
-    with tab_bil:
+with tab_bil:
+    # 1. Caricamento Dati
     df_budget_b = get_budget_data()
     # Usiamo una copia locale per non toccare il globale
     df_analysis_b = df_cloud.copy()
     
     st.markdown("### 🏦 Bilancio di Esercizio")
     
-# Selettori Periodo
+    # 2. Selettori Periodo
     cb1, cb2, cb3 = st.columns(3)
     with cb1:
         lista_anni = sorted(df_analysis_b["Anno"].unique(), reverse=True)
@@ -510,27 +490,26 @@ if "nascondi_saldi" not in st.session_state:
             l_num_b = list(range(1, 13))
             l_mesi_b = list(MAP_MESI.values())
 
-    # 1. Dati Reali
+    # 3. Calcoli Dati Reali
     reale_raw = df_analysis_b[(df_analysis_b["Anno"] == anno_b) & (df_analysis_b["MeseNum"].isin(l_num_b))]
     if not reale_raw.empty:
         consuntivo_b = reale_raw.groupby(["Categoria", "Tipo"])["Importo"].sum().reset_index().rename(columns={"Importo": "Reale"})
     else:
         consuntivo_b = pd.DataFrame(columns=["Categoria", "Tipo", "Reale"])
     
-    # 2. Dati Budget
+    # 4. Calcoli Dati Budget
     preventivo_b = pd.DataFrame()
     if not df_budget_b.empty and "Mese" in df_budget_b.columns:
         b_raw = df_budget_b[df_budget_b["Mese"].isin(l_mesi_b)]
         if not b_raw.empty:
             preventivo_b = b_raw.groupby(["Categoria", "Tipo"])["Importo"].sum().reset_index().rename(columns={"Importo": "Budget"})
 
-    # 3. Merge
+    # 5. Merge
     bilancio = pd.merge(preventivo_b, consuntivo_b, on=["Categoria", "Tipo"], how="outer").fillna(0)
     if "Budget" not in bilancio.columns: bilancio["Budget"] = 0.0
     if "Reale" not in bilancio.columns: bilancio["Reale"] = 0.0
 
-    # 4. Estrazione Valori Chiave
-    
+    # 6. Estrazione Valori Chiave
     # Saldo Iniziale
     saldo_ini_row = bilancio[bilancio["Categoria"] == "SALDO INIZIALE"]
     saldo_ini_bud = saldo_ini_row["Budget"].sum()
@@ -559,7 +538,28 @@ if "nascondi_saldi" not in st.session_state:
     saldo_fin_bud = saldo_ini_bud + utile_bud
     saldo_fin_real = saldo_ini_real + utile_real
 
-   # Display Metriche (MODIFICATO)
+    # ==========================================================================
+    # LOGICA PRIVACY MODE (Inserita qui, dopo i calcoli)
+    # ==========================================================================
+    if "nascondi_saldi" not in st.session_state:
+        st.session_state["nascondi_saldi"] = False
+
+    st.write("") # Spaziatura
+    col_priv, _ = st.columns([2, 8])
+    with col_priv:
+        icona = "🫣" if st.session_state["nascondi_saldi"] else "👁️"
+        label = "Mostra Dati" if st.session_state["nascondi_saldi"] else "Nascondi Dati"
+        
+        if st.button(f"{icona} {label}", key="btn_privacy_tab1"):
+            st.session_state["nascondi_saldi"] = not st.session_state["nascondi_saldi"]
+
+    def fmt_priv(valore):
+        if st.session_state["nascondi_saldi"]:
+            return "**** €"
+        return f"{valore:,.2f} €"
+    # ==========================================================================
+
+    # 7. Display Metriche
     st.divider()
     m1, m2, m3, m4 = st.columns(4)
     
@@ -580,6 +580,8 @@ if "nascondi_saldi" not in st.session_state:
               fmt_priv(saldo_fin_real), 
               delta=None if st.session_state["nascondi_saldi"] else f"Utile: {utile_real:,.2f} €")
 
+    # 8. Schemini Dettaglio
+    st.divider()
     col_schemino_sx, col_schemino_dx = st.columns(2)
     
     # Schemino Entrate
@@ -610,24 +612,23 @@ if "nascondi_saldi" not in st.session_state:
 
     st.markdown("---")
     
-    # Utile Finale con Colori Condizionali Espliciti
+    # 9. Utile Finale
     col_utile_real, col_utile_bud = st.columns(2)
     
-    if utile_real >= 0:
-        colore_utile = "green"
-    else:
-        colore_utile = "red"
+    if utile_real >= 0: colore_utile = "green"
+    else: colore_utile = "red"
         
-    if utile_bud >= 0:
-        colore_utile_bud = "green"
-    else:
-        colore_utile_bud = "red"
+    if utile_bud >= 0: colore_utile_bud = "green"
+    else: colore_utile_bud = "red"
+    
+    # Applichiamo la privacy anche qui
+    txt_utile_real = "**** €" if st.session_state["nascondi_saldi"] else f"{utile_real:+,.2f} €"
+    txt_utile_bud = "**** €" if st.session_state["nascondi_saldi"] else f"{utile_bud:+,.2f} €"
     
     with col_utile_real:
-        st.markdown(f"### 💡 Utile REALE: :{colore_utile}[{utile_real:+,.2f} €]")
+        st.markdown(f"### 💡 Utile REALE: :{colore_utile}[{txt_utile_real}]")
     with col_utile_bud:
-        st.markdown(f"### 📋 Utile BUDGET: :{colore_utile_bud}[{utile_bud:+,.2f} €]")
-
+        st.markdown(f"### 📋 Utile BUDGET: :{colore_utile_bud}[{txt_utile_bud}]")
 # ==============================================================================
 # TAB 2: INDICI & KPI
 # ==============================================================================
@@ -1041,6 +1042,7 @@ with tab_stor:
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
         st.success("Database aggiornato correttamnte!")
         st.rerun()
+
 
 
 
