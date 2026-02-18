@@ -994,32 +994,45 @@ with tab_imp:
 
     if st.button("💾 SALVA TUTTO", type="primary"):
         save_list = []
-        if not ed_ent.empty: save_list.append(ed_ent)
-        if not ed_usc.empty: save_list.append(ed_usc)
+        
+        # 1. Aggiungo le Entrate se ci sono
+        if not ed_ent.empty: 
+            save_list.append(ed_ent)
+        
+        # 2. Aggiungo le Uscite se ci sono
+        if not ed_usc.empty: 
+            save_list.append(ed_usc)
+        
+        # 3. Gestione Manuale (con il FIX Anti-Crash)
         if not ed_man.empty:
-        # --- FIX ANTI-CRASH ---
-        # 1. Forziamo la colonna Importo a essere numerica. 
-        #    Se c'è testo o vuoto, diventa 0.0 (così non rompe il > 0)
-        ed_man["Importo"] = pd.to_numeric(ed_man["Importo"], errors='coerce').fillna(0.0)
+            # --- FIX ANTI-CRASH ---
+            # Forziamo la colonna Importo a essere numerica. 
+            # Se c'è testo o vuoto, diventa 0.0 (così non rompe il > 0)
+            ed_man["Importo"] = pd.to_numeric(ed_man["Importo"], errors='coerce').fillna(0.0)
+            
+            # Ora il filtro funziona sicuro
+            v = ed_man[ed_man["Importo"] > 0].copy()
+            
+            # Se dopo il filtro c'è ancora qualcosa, preparo i dati
+            if not v.empty:
+                v["Data"] = pd.to_datetime(v["Data"])
+                v["Mese"] = v["Data"].dt.strftime('%b-%y')
+                # Generiamo una firma univoca per queste righe manuali
+                v["Firma"] = [f"MAN-{uuid.uuid4().hex[:6]}" for _ in range(len(v))]
+                save_list.append(v)
         
-        # 2. Ora il filtro funziona sicuro
-        v = ed_man[ed_man["Importo"] > 0].copy()
-        # ----------------------
-
-        if not v.empty:
-            v["Data"] = pd.to_datetime(v["Data"])
-            v["Mese"] = v["Data"].dt.strftime('%b-%y')
-            # Generiamo una firma univoca per queste righe manuali
-            v["Firma"] = [f"MAN-{uuid.uuid4().hex[:6]}" for _ in range(len(v))]
-            save_list.append(v)
-        
+        # 4. Se c'è qualcosa da salvare (Entrate, Uscite o Manuali)
         if save_list:
             fin = pd.concat([df_cloud] + save_list, ignore_index=True)
             fin["Data"] = pd.to_datetime(fin["Data"]).dt.strftime("%Y-%m-%d")
+            
             conn.update(worksheet="DB_TRANSAZIONI", data=fin)
+            
+            # Pulisco le tabelle temporanee
             st.session_state["df_mail_found"] = pd.DataFrame()
             st.session_state["df_manual_entry"] = pd.DataFrame()
             st.session_state["df_mail_discarded"] = pd.DataFrame()
+            
             st.balloons()
             st.success("✅ Tutto salvato correttamente!")
             st.rerun()
@@ -1051,6 +1064,7 @@ with tab_stor:
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
         st.success("Database aggiornato correttamnte!")
         st.rerun()
+
 
 
 
