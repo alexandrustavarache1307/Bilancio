@@ -1029,87 +1029,101 @@ with tab_imp:
         st.markdown("---")
         st.markdown("##### ✍️ Manuale / Correzioni")
         
-        # 1. Prepariamo una struttura vuota ma BEN DEFINITA
-        # Se è vuota o non esiste, la ricreiamo con le colonne giuste e i tipi giusti
-        if st.session_state["df_manual_entry"].empty:
-            df_manual_template = pd.DataFrame({
-                "Data": pd.Series(dtype='datetime64[ns]'),
-                "Descrizione": pd.Series(dtype='str'),
-                "Importo": pd.Series(dtype='float'),
-                "Tipo": pd.Series(dtype='str'),
-                "Categoria": pd.Series(dtype='str')
-            })
-        else:
-            df_manual_template = st.session_state["df_manual_entry"]
+        # --- 1. GESTIONE MEMORIA ROBUSTA ---
+        # Se non esiste una "memoria" per i dati manuali, la creiamo vuota ma strutturata
+        if "manual_data" not in st.session_state:
+            st.session_state["manual_data"] = pd.DataFrame(
+                columns=["Data", "Descrizione", "Importo", "Tipo", "Categoria"]
+            )
 
-        # 2. Mostriamo l'editor
-        # num_rows="dynamic" è fondamentale: ti permette di cliccare sulla riga vuota o "+" per aggiungere
+        # Se la tabella è vuota, aggiungiamo una riga vuota pronta all'uso (con data oggi)
+        if st.session_state["manual_data"].empty:
+            nuova_riga = pd.DataFrame([{
+                "Data": datetime.now(),
+                "Descrizione": "",
+                "Importo": 0.0,
+                "Tipo": "Uscita",
+                "Categoria": "DA VERIFICARE"
+            }])
+            # Usiamo concat per non avere problemi di indici
+            st.session_state["manual_data"] = pd.concat([st.session_state["manual_data"], nuova_riga], ignore_index=True)
+
+        # --- 2. EDITOR COLLEGATO ALLA MEMORIA ---
+        # Modificando qui, modifichi direttamente 'manual_data'
         ed_man = st.data_editor(
-            df_manual_template,
-            num_rows="dynamic", 
+            st.session_state["manual_data"],
+            num_rows="dynamic",
             column_config={
                 "Categoria": st.column_config.SelectboxColumn(options=sorted(CAT_USCITE + CAT_ENTRATE), required=True),
-                "Tipo": st.column_config.SelectboxColumn(options=["Entrata", "Uscita"], required=True, default="Uscita"),
-                "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True, default=datetime.now()),
-                "Importo": st.column_config.NumberColumn(format="%.2f €", required=True, default=0.0),
+                "Tipo": st.column_config.SelectboxColumn(options=["Entrata", "Uscita"], required=True),
+                "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True),
+                "Importo": st.column_config.NumberColumn(format="%.2f €", required=True),
                 "Descrizione": st.column_config.TextColumn(required=True)
             },
-            key="edit_manual_v3", # Chiave nuova per resettare eventuali bug grafici
+            key="editor_manuale_fin", # Chiave univoca
             use_container_width=True
         )
 
-        # 3. Bottone di Salvataggio (Modificato per essere più tollerante)
+        # --- 3. SALVATAGGIO ---
         submitted = st.form_submit_button("💾 SALVA TUTTO E IMPARA", type="primary")
 
         if submitted:
             save_list = []
             keyword_list = []
 
-            # --- Logica Entrate (come prima) ---
-            if not ed_ent.empty: 
-                save_list.append(ed_ent)
-                validi = ed_ent[ed_ent["Categoria"] != "DA VERIFICARE"]
-                for _, row in validi.iterrows():
-                    keyword_list.append({"Parola": row["Descrizione"], "Categoria": row["Categoria"]})
+            # A. Processo Entrate (Mail)
+            if not ed_ent.empty:
+                # Filtriamo solo quelle che hanno un importo (per sicurezza)
+                v_ent = ed_ent[ed_ent["Importo"] != 0].copy()
+                if not v_ent.empty:
+                    save_list.append(v_ent)
+                    # Apprendimento
+                    for _, row in v_ent.iterrows():
+                        if row["Categoria"] != "DA VERIFICARE":
+                            keyword_list.append({"Parola": row["Descrizione"], "Categoria": row["Categoria"]})
 
-            # --- Logica Uscite (come prima) ---
-            if not ed_usc.empty: 
-                save_list.append(ed_usc)
-                validi = ed_usc[ed_usc["Categoria"] != "DA VERIFICARE"]
-                for _, row in validi.iterrows():
-                    keyword_list.append({"Parola": row["Descrizione"], "Categoria": row["Categoria"]})
+            # B. Processo Uscite (Mail)
+            if not ed_usc.empty:
+                v_usc = ed_usc[ed_usc["Importo"] != 0].copy()
+                if not v_usc.empty:
+                    save_list.append(v_usc)
+                    # Apprendimento
+                    for _, row in v_usc.iterrows():
+                        if row["Categoria"] != "DA VERIFICARE":
+                            keyword_list.append({"Parola": row["Descrizione"], "Categoria": row["Categoria"]})
 
-            # --- LOGICA MANUALE (CORRETTA) ---
+            # C. Processo Manuale (Dalla variabile ed_man che ora contiene i dati modificati)
             if not ed_man.empty:
-                # 1. Pulisci Importo (gestisce virgole, punti e testo errato)
+                # Pulizia Importo
                 ed_man["Importo"] = pd.to_numeric(ed_man["Importo"], errors='coerce').fillna(0.0)
                 
-                # 2. Filtro: Salviamo tutto ciò che ha un importo DIVERSO da 0 (positivo o negativo)
-                # E che abbia almeno una descrizione scritta
-                v = ed_man[
+                # Filtro Validità: Importo diverso da 0 E Descrizione non vuota
+                validi_man = ed_man[
                     (ed_man["Importo"] != 0) & 
-                    (ed_man["Descrizione"].notna()) & 
-                    (ed_man["Descrizione"] != "")
+                    (ed_man["Descrizione"].str.strip() != "")
                 ].copy()
                 
-                if not v.empty:
-                    v["Data"] = pd.to_datetime(v["Data"])
-                    v["Mese"] = v["Data"].dt.strftime('%b-%y')
-                    v["Firma"] = [f"MAN-{uuid.uuid4().hex[:6]}" for _ in range(len(v))]
-                    save_list.append(v)
+                if not validi_man.empty:
+                    # Completiamo i dati mancanti
+                    validi_man["Data"] = pd.to_datetime(validi_man["Data"])
+                    validi_man["Mese"] = validi_man["Data"].dt.strftime('%b-%y')
+                    validi_man["Firma"] = [f"MAN-{uuid.uuid4().hex[:6]}" for _ in range(len(validi_man))]
                     
-                    # Apprendimento anche dal manuale
-                    validi = v[v["Categoria"] != "DA VERIFICARE"]
-                    for _, row in validi.iterrows():
-                        keyword_list.append({"Parola": row["Descrizione"], "Categoria": row["Categoria"]})
+                    save_list.append(validi_man)
+                    
+                    # Apprendimento Manuale
+                    for _, row in validi_man.iterrows():
+                        if row["Categoria"] != "DA VERIFICARE":
+                            keyword_list.append({"Parola": row["Descrizione"], "Categoria": row["Categoria"]})
 
-            # --- SALVATAGGIO FINALE ---
+            # --- D. SALVATAGGIO FINALE NEL DB ---
             if save_list:
+                # 1. Aggiorna DB Transazioni
                 fin = pd.concat([df_cloud] + save_list, ignore_index=True)
                 fin["Data"] = pd.to_datetime(fin["Data"]).dt.strftime("%Y-%m-%d")
                 conn.update(worksheet="DB_TRANSAZIONI", data=fin)
                 
-                # Aggiornamento Keywords
+                # 2. Aggiorna DB Keywords (Apprendimento)
                 if keyword_list:
                     try:
                         try: old_kw = conn.read(worksheet="DB_KEYWORDS", usecols=[0,1])
@@ -1121,19 +1135,19 @@ with tab_imp:
                         final_kw = final_kw.drop_duplicates(subset=["Parola"], keep='last')
                         
                         conn.update(worksheet="DB_KEYWORDS", data=final_kw)
-                        get_custom_map.clear()
+                        get_custom_map.clear() # Pulisce cache memoria
                     except: pass
 
-                # Reset pulito
+                # 3. Pulizia Sessione
                 st.session_state["df_mail_found"] = pd.DataFrame()
-                st.session_state["df_manual_entry"] = pd.DataFrame()
                 st.session_state["df_mail_discarded"] = pd.DataFrame()
+                del st.session_state["manual_data"] # Reset totale tabella manuale
                 
                 st.balloons()
-                st.success("✅ Salvato correttamente!")
+                st.success("✅ Salvato correttamente! (Mail + Manuali + Apprendimento)")
                 st.rerun()
             else:
-                st.warning("⚠️ Nessun dato valido da salvare. Controlla di aver inserito l'importo (diverso da 0) e la descrizione.")
+                st.warning("⚠️ Nessun dato valido da salvare. Controlla di aver messo importi diversi da 0.")
        
 # ==============================================================================
 # TAB 5: STORICO (FIX FILTRO MESI)
@@ -1278,6 +1292,7 @@ with tab_stor:
                     
             except Exception as e:
                 st.error(f"Errore durante il salvataggio: {e}")
+
 
 
 
