@@ -1123,31 +1123,54 @@ with tab_imp:
                 fin["Data"] = pd.to_datetime(fin["Data"]).dt.strftime("%Y-%m-%d")
                 conn.update(worksheet="DB_TRANSAZIONI", data=fin)
                 
-                # 2. Aggiorna DB Keywords (Apprendimento)
-                if keyword_list:
+                # --- AGGIORNAMENTO INTELLIGENTE DB KEYWORDS ---
+            if keyword_list:
+                try:
+                    # 1. LEGGIAMO LO STORICO ESISTENTE (Fondamentale!)
                     try:
-                        try: old_kw = conn.read(worksheet="DB_KEYWORDS", usecols=[0,1])
-                        except: old_kw = pd.DataFrame(columns=["Parola", "Categoria"])
-                        
-                        new_kw_df = pd.DataFrame(keyword_list)
-                        final_kw = pd.concat([old_kw, new_kw_df], ignore_index=True)
-                        final_kw["Parola"] = final_kw["Parola"].astype(str).str.strip()
-                        final_kw = final_kw.drop_duplicates(subset=["Parola"], keep='last')
-                        
-                        conn.update(worksheet="DB_KEYWORDS", data=final_kw)
-                        get_custom_map.clear() # Pulisce cache memoria
-                    except: pass
+                        # Leggiamo tutto il foglio corrente
+                        df_old_kw = conn.read(worksheet="DB_KEYWORDS", usecols=[0, 1])
+                        # Se è vuoto o non ha colonne giuste, lo inizializziamo
+                        if df_old_kw.empty or "Parola" not in df_old_kw.columns:
+                            df_old_kw = pd.DataFrame(columns=["Parola", "Categoria"])
+                    except Exception:
+                        # Se il foglio non esiste proprio o dà errore, partiamo da zero
+                        df_old_kw = pd.DataFrame(columns=["Parola", "Categoria"])
 
-                # 3. Pulizia Sessione
-                st.session_state["df_mail_found"] = pd.DataFrame()
-                st.session_state["df_mail_discarded"] = pd.DataFrame()
-                del st.session_state["manual_data"] # Reset totale tabella manuale
-                
-                st.balloons()
-                st.success("✅ Salvato correttamente! (Mail + Manuali + Apprendimento)")
-                st.rerun()
-            else:
-                st.warning("⚠️ Nessun dato valido da salvare. Controlla di aver messo importi diversi da 0.")
+                    # 2. CREIAMO IL DATAFRAME DELLE NOVITÀ
+                    df_new_kw = pd.DataFrame(keyword_list)
+
+                    # 3. UNIAMO VECCHIO + NUOVO
+                    # Mettiamo prima il vecchio, poi il nuovo in fondo
+                    df_total = pd.concat([df_old_kw, df_new_kw], ignore_index=True)
+
+                    # 4. PULIZIA E DEDUPLICAZIONE AVANZATA
+                    # Creiamo una colonna temporanea per confrontare le parole senza badare a maiuscole/spazi
+                    df_total["_key_temp"] = df_total["Parola"].astype(str).str.lower().str.strip()
+                    
+                    # Rimuoviamo i duplicati basandoci sulla chiave pulita. 
+                    # keep='last' è CRUCIALE: significa "tieni l'ultima versione che ho inserito".
+                    # Così se cambi categoria a una parola, il sistema si aggiorna.
+                    df_total = df_total.drop_duplicates(subset=["_key_temp"], keep='last')
+                    
+                    # 5. PREPARIAMO IL FILE FINALE
+                    # Teniamo solo le colonne giuste
+                    df_final_keywords = df_total[["Parola", "Categoria"]].copy()
+                    
+                    # Ordiniamo alfabeticamente per pulizia
+                    df_final_keywords = df_final_keywords.sort_values(by="Parola")
+
+                    # 6. SCRIVIAMO IL NUOVO ELENCO COMPLETO
+                    conn.update(worksheet="DB_KEYWORDS", data=df_final_keywords)
+                    
+                    # 7. PULIAMO LA CACHE DI STREAMLIT
+                    # Così la funzione get_custom_map() ricaricherà subito le nuove regole
+                    get_custom_map.clear()
+                    
+                    st.toast(f"🧠 Apprese {len(df_new_kw)} nuove regole di categorizzazione!")
+
+                except Exception as e:
+                    st.error(f"Errore nell'aggiornamento delle keywords: {e}")
        
 # ==============================================================================
 # TAB 5: STORICO (FIX FILTRO MESI)
@@ -1292,6 +1315,7 @@ with tab_stor:
                     
             except Exception as e:
                 st.error(f"Errore durante il salvataggio: {e}")
+
 
 
 
