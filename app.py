@@ -1114,36 +1114,45 @@ with tab_imp:
                 st.rerun()
 
 # ==============================================================================
-# TAB 5: STORICO (CON FILTRI ANTI-REFRESH)
+# TAB 5: STORICO (FIX FILTRO MESI)
 # ==============================================================================
 with tab_stor:
     st.markdown("### 🗂 Storico Transazioni")
     
     # 1. Preparazione Dati
-    # Assicuriamoci che la data sia datetime
+    # Assicuriamoci che la data sia datetime reale
     df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
+    
+    # Creiamo colonne di appoggio sicure per i filtri
     df_view = df_cloud.copy()
-
+    df_view["_Anno_Filtro"] = df_view["Data"].dt.year
+    df_view["_Mese_Num"] = df_view["Data"].dt.month
+    
     # ==========================================================================
     # AREA FILTRI (BLOCCATA DENTRO UN FORM)
     # ==========================================================================
-    with st.expander("🔎 FILTRI AVANZATI (Clicca per aprire)", expanded=True):
+    with st.expander("🔍 FILTRI AVANZATI (Clicca per aprire)", expanded=True):
         with st.form("form_filtri_storico"):
             st.caption("Seleziona i filtri e premi 'Applica' per aggiornare la tabella.")
             
             # Riga 1: Filtri Temporali e Tipo
             c1, c2, c3 = st.columns(3)
             with c1:
-                # Anni disponibili
-                anni_opt = sorted(df_view["Anno"].unique().tolist(), reverse=True)
+                # Anni disponibili (Numerici)
+                anni_opt = sorted(df_view["_Anno_Filtro"].dropna().unique().astype(int).tolist(), reverse=True)
+                # Se non ci sono anni, metti l'anno corrente
+                if not anni_opt: anni_opt = [datetime.now().year]
                 f_anni = st.multiselect("📅 Anno", anni_opt, default=anni_opt)
+            
             with c2:
-                # Mesi disponibili
-                mesi_opt = list(MAP_MESI.values()) # Tutti i mesi
-                f_mesi = st.multiselect("🗓️ Mese", mesi_opt)
+                # Mesi disponibili (Nomi italiani)
+                # MAP_MESI = {1: 'Gen', 2: 'Feb'...}
+                nomi_mesi = list(MAP_MESI.values()) 
+                f_mesi_nomi = st.multiselect("🗓️ Mese", nomi_mesi, default=nomi_mesi)
+            
             with c3:
                 # Tipo
-                f_tipo = st.multiselect("b Tipo", ["Entrata", "Uscita"])
+                f_tipo = st.multiselect("b Tipo", ["Entrata", "Uscita"], default=["Entrata", "Uscita"])
             
             # Riga 2: Categoria e Ricerca
             c4, c5 = st.columns([1, 2])
@@ -1153,30 +1162,33 @@ with tab_stor:
             with c5:
                 f_txt = st.text_input("🔍 Cerca nel testo (es. Amazon, Stipendio)")
 
-            # BOTTONE PER APPLICARE I FILTRI (Blocca il refresh continuo)
+            # BOTTONE PER APPLICARE I FILTRI
             submitted_filters = st.form_submit_button("✅ APPLICA FILTRI", type="primary")
 
     # ==========================================================================
-    # LOGICA DI FILTRAGGIO (Scatta solo dopo il click o al primo avvio)
+    # LOGICA DI FILTRAGGIO
     # ==========================================================================
     
-    # Filtro Anno
+    # 1. Filtro Anno (Usa la colonna numerica sicura)
     if f_anni:
-        df_view = df_view[df_view["Anno"].isin(f_anni)]
+        df_view = df_view[df_view["_Anno_Filtro"].isin(f_anni)]
     
-    # Filtro Mese
-    if f_mesi:
-        df_view = df_view[df_view["Mese"].isin(f_mesi)]
+    # 2. Filtro Mese (Converto i nomi selezionati in numeri e filtro sul numero)
+    # Esempio: Se selezioni 'Gen', cerco il mese 1.
+    if f_mesi_nomi:
+        # Recupero i numeri dei mesi selezionati dalla mappa inversa
+        numeri_selezionati = [k for k, v in MAP_MESI.items() if v in f_mesi_nomi]
+        df_view = df_view[df_view["_Mese_Num"].isin(numeri_selezionati)]
         
-    # Filtro Tipo
+    # 3. Filtro Tipo
     if f_tipo:
         df_view = df_view[df_view["Tipo"].isin(f_tipo)]
         
-    # Filtro Categoria
+    # 4. Filtro Categoria
     if f_cat:
         df_view = df_view[df_view["Categoria"].isin(f_cat)]
         
-    # Filtro Testo
+    # 5. Filtro Testo
     if f_txt:
         df_view = df_view[df_view["Descrizione"].str.contains(f_txt, case=False, na=False)]
 
@@ -1185,8 +1197,15 @@ with tab_stor:
     # ==========================================================================
     st.markdown(f"**Visualizzando {len(df_view)} transazioni**")
 
+    # Rimuoviamo le colonne di appoggio prima di mostrare l'editor
+    cols_to_show = ["Data", "Descrizione", "Importo", "Tipo", "Categoria", "Mese", "Firma"]
+    # Filtriamo solo le colonne che esistono davvero
+    cols_exist = [c for c in cols_to_show if c in df_view.columns]
+    
+    df_editor_input = df_view[cols_exist].copy()
+
     df_storico_edited = st.data_editor(
-        df_view,
+        df_editor_input,
         num_rows="dynamic",
         use_container_width=True,
         height=600,
@@ -1195,16 +1214,16 @@ with tab_stor:
             "Tipo": st.column_config.SelectboxColumn(options=["Entrata", "Uscita"], required=True),
             "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True),
             "Importo": st.column_config.NumberColumn(format="%.2f €"),
-            # Disabilitiamo la modifica della Firma per sicurezza
-            "Firma": st.column_config.TextColumn(disabled=True)
+            "Firma": st.column_config.TextColumn(disabled=True),
+            "Mese": st.column_config.TextColumn(disabled=True) # Meglio non modificare a mano il mese stringa
         },
-        key="editor_storico_v2"
+        key="editor_storico_v3"
     )
     
     st.divider()
 
     # ==========================================================================
-    # BOTTONE SALVATAGGIO (Fuori dal form dei filtri)
+    # BOTTONE SALVATAGGIO
     # ==========================================================================
     col_save, _ = st.columns([2, 8])
     with col_save:
@@ -1212,31 +1231,32 @@ with tab_stor:
             try:
                 # 1. Carichiamo tutto il DB originale
                 df_full_original = df_cloud.copy()
-                
-                # 2. Usiamo la Firma come chiave univoca
                 df_full_original.set_index("Firma", inplace=True)
                 
-                # 3. Prepariamo le modifiche
-                # (Dobbiamo assicurarci che l'indice sia la Firma anche qui)
+                # 2. Prepariamo le modifiche
                 if "Firma" in df_storico_edited.columns:
                     df_edited_subset = df_storico_edited.set_index("Firma")
                     
-                    # 4. Aggiorniamo SOLO le righe modificate/visibili
+                    # 3. Aggiorniamo
                     df_full_original.update(df_edited_subset)
                     
-                    # 5. Reset index e Salvataggio
+                    # 4. Salviamo
                     df_final_to_save = df_full_original.reset_index()
                     df_final_to_save["Data"] = pd.to_datetime(df_final_to_save["Data"]).dt.strftime("%Y-%m-%d")
+                    
+                    # Ricalcoliamo le colonne Anno/MeseNum per sicurezza
+                    # (Non sono nel DB excel ma servono al codice se ricarica)
                     
                     conn.update(worksheet="DB_TRANSAZIONI", data=df_final_to_save)
                     
                     st.success("✅ Database aggiornato correttamente!")
                     st.rerun()
                 else:
-                    st.error("Errore: Colonna 'Firma' mancante. Impossibile salvare.")
+                    st.error("Errore critico: Colonna 'Firma' mancante.")
                     
             except Exception as e:
                 st.error(f"Errore durante il salvataggio: {e}")
+
 
 
 
