@@ -997,12 +997,21 @@ with tab_imp:
         if not ed_ent.empty: save_list.append(ed_ent)
         if not ed_usc.empty: save_list.append(ed_usc)
         if not ed_man.empty:
-            v = ed_man[ed_man["Importo"] > 0].copy()
-            if not v.empty:
-                v["Data"] = pd.to_datetime(v["Data"])
-                v["Mese"] = v["Data"].dt.strftime('%b-%y')
-                v["Firma"] = [f"MAN-{uuid.uuid4().hex[:6]}" for _ in range(len(v))]
-                save_list.append(v)
+        # --- FIX ANTI-CRASH ---
+        # 1. Forziamo la colonna Importo a essere numerica. 
+        #    Se c'è testo o vuoto, diventa 0.0 (così non rompe il > 0)
+        ed_man["Importo"] = pd.to_numeric(ed_man["Importo"], errors='coerce').fillna(0.0)
+        
+        # 2. Ora il filtro funziona sicuro
+        v = ed_man[ed_man["Importo"] > 0].copy()
+        # ----------------------
+
+        if not v.empty:
+            v["Data"] = pd.to_datetime(v["Data"])
+            v["Mese"] = v["Data"].dt.strftime('%b-%y')
+            # Generiamo una firma univoca per queste righe manuali
+            v["Firma"] = [f"MAN-{uuid.uuid4().hex[:6]}" for _ in range(len(v))]
+            save_list.append(v)
         
         if save_list:
             fin = pd.concat([df_cloud] + save_list, ignore_index=True)
@@ -1042,6 +1051,7 @@ with tab_stor:
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
         st.success("Database aggiornato correttamnte!")
         st.rerun()
+
 
 
 
