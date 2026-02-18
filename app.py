@@ -1114,48 +1114,77 @@ with tab_imp:
                 st.rerun()
 
 # ==============================================================================
-# TAB 5: STORICO (CON FILTRI SIMIL-EXCEL)
+# TAB 5: STORICO (CON FILTRI ANTI-REFRESH)
 # ==============================================================================
 with tab_stor:
     st.markdown("### 🗂 Storico Transazioni")
     
-    # Prepariamo i dati
+    # 1. Preparazione Dati
+    # Assicuriamoci che la data sia datetime
     df_cloud["Data"] = pd.to_datetime(df_cloud["Data"], errors='coerce')
     df_view = df_cloud.copy()
 
-    # --- FILTRI SIMIL-EXCEL (Generati in automatico) ---
-    with st.expander("🔎 FILTRI COLONNE (Come Excel)", expanded=True):
-        # Colonne che vogliamo filtrare
-        cols_to_filter = ["Anno", "Mese", "Categoria", "Tipo", "Descrizione", "Importo"]
-        
-        # Creiamo tante colonne strette quanti sono i filtri
-        cols_ui = st.columns(len(cols_to_filter))
-        
-        # Dizionario per salvare le scelte dell'utente
-        filters = {}
-
-        for i, col_name in enumerate(cols_to_filter):
-            # Troviamo i valori unici per riempire il menu a tendina
-            unique_vals = sorted(df_view[col_name].astype(str).unique().tolist())
+    # ==========================================================================
+    # AREA FILTRI (BLOCCATA DENTRO UN FORM)
+    # ==========================================================================
+    with st.expander("🔎 FILTRI AVANZATI (Clicca per aprire)", expanded=True):
+        with st.form("form_filtri_storico"):
+            st.caption("Seleziona i filtri e premi 'Applica' per aggiornare la tabella.")
             
-            # Creiamo il menu a tendina nella colonna giusta
-            with cols_ui[i]:
-                # Se è Descrizione o Importo, magari ne hai troppi, meglio un text input o multiselect
-                if col_name == "Descrizione":
-                    search_txt = st.text_input(f"🔍 {col_name}", key=f"f_{col_name}")
-                    if search_txt:
-                        df_view = df_view[df_view[col_name].astype(str).str.contains(search_txt, case=False)]
-                else:
-                    selected = st.multiselect(f"🔻 {col_name}", unique_vals, key=f"f_{col_name}")
-                    if selected:
-                        # Applichiamo subito il filtro
-                        # (Convertiamo in stringa per sicurezza nel confronto)
-                        df_view = df_view[df_view[col_name].astype(str).isin(selected)]
+            # Riga 1: Filtri Temporali e Tipo
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                # Anni disponibili
+                anni_opt = sorted(df_view["Anno"].unique().tolist(), reverse=True)
+                f_anni = st.multiselect("📅 Anno", anni_opt, default=anni_opt)
+            with c2:
+                # Mesi disponibili
+                mesi_opt = list(MAP_MESI.values()) # Tutti i mesi
+                f_mesi = st.multiselect("🗓️ Mese", mesi_opt)
+            with c3:
+                # Tipo
+                f_tipo = st.multiselect("b Tipo", ["Entrata", "Uscita"])
+            
+            # Riga 2: Categoria e Ricerca
+            c4, c5 = st.columns([1, 2])
+            with c4:
+                cat_opt = sorted(LISTA_TUTTE)
+                f_cat = st.multiselect("🏷️ Categoria", cat_opt)
+            with c5:
+                f_txt = st.text_input("🔍 Cerca nel testo (es. Amazon, Stipendio)")
 
-    # Mostriamo il numero di righe trovate
-    st.caption(f"Trovate: {len(df_view)} transazioni")
+            # BOTTONE PER APPLICARE I FILTRI (Blocca il refresh continuo)
+            submitted_filters = st.form_submit_button("✅ APPLICA FILTRI", type="primary")
 
-    # --- EDITOR DATI ---
+    # ==========================================================================
+    # LOGICA DI FILTRAGGIO (Scatta solo dopo il click o al primo avvio)
+    # ==========================================================================
+    
+    # Filtro Anno
+    if f_anni:
+        df_view = df_view[df_view["Anno"].isin(f_anni)]
+    
+    # Filtro Mese
+    if f_mesi:
+        df_view = df_view[df_view["Mese"].isin(f_mesi)]
+        
+    # Filtro Tipo
+    if f_tipo:
+        df_view = df_view[df_view["Tipo"].isin(f_tipo)]
+        
+    # Filtro Categoria
+    if f_cat:
+        df_view = df_view[df_view["Categoria"].isin(f_cat)]
+        
+    # Filtro Testo
+    if f_txt:
+        df_view = df_view[df_view["Descrizione"].str.contains(f_txt, case=False, na=False)]
+
+    # ==========================================================================
+    # EDITOR DATI
+    # ==========================================================================
+    st.markdown(f"**Visualizzando {len(df_view)} transazioni**")
+
     df_storico_edited = st.data_editor(
         df_view,
         num_rows="dynamic",
@@ -1166,31 +1195,49 @@ with tab_stor:
             "Tipo": st.column_config.SelectboxColumn(options=["Entrata", "Uscita"], required=True),
             "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True),
             "Importo": st.column_config.NumberColumn(format="%.2f €"),
-            "Firma": st.column_config.TextColumn(disabled=True) # Non toccare la firma
+            # Disabilitiamo la modifica della Firma per sicurezza
+            "Firma": st.column_config.TextColumn(disabled=True)
         },
-        key="editor_storico"
+        key="editor_storico_v2"
     )
     
-    # --- SALVATAGGIO ---
-    if st.button("🔄 AGGIORNA MODIFICHE", type="primary"):
-        # 1. Carichiamo tutto il DB originale
-        df_full_original = df_cloud.copy()
-        
-        # 2. Usiamo la Firma come chiave (come il codice fiscale della transazione)
-        df_full_original.set_index("Firma", inplace=True)
-        df_edited_subset = df_storico_edited.set_index("Firma")
-        
-        # 3. Aggiorniamo SOLO le righe modificate
-        df_full_original.update(df_edited_subset)
-        
-        # 4. Salviamo
-        df_final_to_save = df_full_original.reset_index()
-        df_final_to_save["Data"] = pd.to_datetime(df_final_to_save["Data"]).dt.strftime("%Y-%m-%d")
-        
-        conn.update(worksheet="DB_TRANSAZIONI", data=df_final_to_save)
-        
-        st.success("✅ Database aggiornato correttamente!")
-        st.rerun()
+    st.divider()
+
+    # ==========================================================================
+    # BOTTONE SALVATAGGIO (Fuori dal form dei filtri)
+    # ==========================================================================
+    col_save, _ = st.columns([2, 8])
+    with col_save:
+        if st.button("💾 SALVA MODIFICHE AL DB", type="primary"):
+            try:
+                # 1. Carichiamo tutto il DB originale
+                df_full_original = df_cloud.copy()
+                
+                # 2. Usiamo la Firma come chiave univoca
+                df_full_original.set_index("Firma", inplace=True)
+                
+                # 3. Prepariamo le modifiche
+                # (Dobbiamo assicurarci che l'indice sia la Firma anche qui)
+                if "Firma" in df_storico_edited.columns:
+                    df_edited_subset = df_storico_edited.set_index("Firma")
+                    
+                    # 4. Aggiorniamo SOLO le righe modificate/visibili
+                    df_full_original.update(df_edited_subset)
+                    
+                    # 5. Reset index e Salvataggio
+                    df_final_to_save = df_full_original.reset_index()
+                    df_final_to_save["Data"] = pd.to_datetime(df_final_to_save["Data"]).dt.strftime("%Y-%m-%d")
+                    
+                    conn.update(worksheet="DB_TRANSAZIONI", data=df_final_to_save)
+                    
+                    st.success("✅ Database aggiornato correttamente!")
+                    st.rerun()
+                else:
+                    st.error("Errore: Colonna 'Firma' mancante. Impossibile salvare.")
+                    
+            except Exception as e:
+                st.error(f"Errore durante il salvataggio: {e}")
+
 
 
 
