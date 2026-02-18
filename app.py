@@ -943,7 +943,7 @@ with tab_graf:
             )
 
 # ==============================================================================
-# TAB 4: IMPORTA
+# TAB 4: IMPORTA (CON FORM E APPRENDIMENTO)
 # ==============================================================================
 with tab_imp:
     col_search, col_actions = st.columns([1, 4])
@@ -980,82 +980,118 @@ with tab_imp:
         df_view_entrate = df_new[df_new["Tipo"] == "Entrata"]
         df_view_uscite = df_new[df_new["Tipo"] == "Uscita"]
 
-    st.markdown("##### 💰 Nuove Entrate")
-    if not df_view_entrate.empty:
-        ed_ent = st.data_editor(
-            df_view_entrate,
-            column_config={"Categoria": st.column_config.SelectboxColumn(options=CAT_ENTRATE)},
-            key="k_ent", use_container_width=True
+    # ==========================================================================
+    # FORM UNICO: BLOCCA I REFRESH FINCHÉ NON PREMI "SALVA"
+    # ==========================================================================
+    with st.form("form_importazione"):
+        st.markdown("##### 💰 Nuove Entrate")
+        if not df_view_entrate.empty:
+            ed_ent = st.data_editor(
+                df_view_entrate,
+                column_config={"Categoria": st.column_config.SelectboxColumn(options=CAT_ENTRATE)},
+                key="k_ent", use_container_width=True, num_rows="dynamic"
+            )
+        else:
+            ed_ent = pd.DataFrame()
+            st.info("Nessuna nuova entrata trovata.")
+
+        st.markdown("##### 💸 Nuove Uscite")
+        if not df_view_uscite.empty:
+            ed_usc = st.data_editor(
+                df_view_uscite,
+                column_config={"Categoria": st.column_config.SelectboxColumn(options=CAT_USCITE)},
+                key="k_usc", use_container_width=True, num_rows="dynamic"
+            )
+        else:
+            ed_usc = pd.DataFrame()
+            st.info("Nessuna nuova uscita trovata.")
+
+        st.markdown("---")
+        st.markdown("##### ✍️ Manuale / Correzioni")
+        
+        ed_man = st.data_editor(
+            st.session_state["df_manual_entry"],
+            num_rows="dynamic",
+            column_config={"Categoria": st.column_config.SelectboxColumn(options=sorted(CAT_USCITE + CAT_ENTRATE))},
+            key="edit_manual", use_container_width=True
         )
-    else:
-        ed_ent = pd.DataFrame()
-        st.info("Nessuna nuova entrata trovata.")
 
-    st.markdown("##### 💸 Nuove Uscite")
-    if not df_view_uscite.empty:
-        ed_usc = st.data_editor(
-            df_view_uscite,
-            column_config={"Categoria": st.column_config.SelectboxColumn(options=CAT_USCITE)},
-            key="k_usc", use_container_width=True
-        )
-    else:
-        ed_usc = pd.DataFrame()
-        st.info("Nessuna nuova uscita trovata.")
+        # BOTTONE UNICO DI INVIO
+        submitted = st.form_submit_button("💾 SALVA TUTTO E IMPARA", type="primary")
 
-    st.markdown("---")
-    st.markdown("##### ✍️ Manuale / Correzioni")
-    
-    ed_man = st.data_editor(
-        st.session_state["df_manual_entry"],
-        num_rows="dynamic",
-        column_config={"Categoria": st.column_config.SelectboxColumn(options=sorted(CAT_USCITE + CAT_ENTRATE))},
-        key="edit_manual", use_container_width=True
-    )
+        if submitted:
+            save_list = []
+            keyword_list = [] # Qui raccogliamo le nuove parole da imparare
 
-    if st.button("💾 SALVA TUTTO", type="primary"):
-        save_list = []
-        
-        # 1. Aggiungo le Entrate se ci sono
-        if not ed_ent.empty: 
-            save_list.append(ed_ent)
-        
-        # 2. Aggiungo le Uscite se ci sono
-        if not ed_usc.empty: 
-            save_list.append(ed_usc)
-        
-        # 3. Gestione Manuale (con il FIX Anti-Crash)
-        if not ed_man.empty:
-            # --- FIX ANTI-CRASH ---
-            # Forziamo la colonna Importo a essere numerica. 
-            # Se c'è testo o vuoto, diventa 0.0 (così non rompe il > 0)
-            ed_man["Importo"] = pd.to_numeric(ed_man["Importo"], errors='coerce').fillna(0.0)
-            
-            # Ora il filtro funziona sicuro
-            v = ed_man[ed_man["Importo"] > 0].copy()
-            
-            # Se dopo il filtro c'è ancora qualcosa, preparo i dati
-            if not v.empty:
-                v["Data"] = pd.to_datetime(v["Data"])
-                v["Mese"] = v["Data"].dt.strftime('%b-%y')
-                # Generiamo una firma univoca per queste righe manuali
-                v["Firma"] = [f"MAN-{uuid.uuid4().hex[:6]}" for _ in range(len(v))]
-                save_list.append(v)
-        
-        # 4. Se c'è qualcosa da salvare (Entrate, Uscite o Manuali)
-        if save_list:
-            fin = pd.concat([df_cloud] + save_list, ignore_index=True)
-            fin["Data"] = pd.to_datetime(fin["Data"]).dt.strftime("%Y-%m-%d")
-            
-            conn.update(worksheet="DB_TRANSAZIONI", data=fin)
-            
-            # Pulisco le tabelle temporanee
-            st.session_state["df_mail_found"] = pd.DataFrame()
-            st.session_state["df_manual_entry"] = pd.DataFrame()
-            st.session_state["df_mail_discarded"] = pd.DataFrame()
-            
-            st.balloons()
-            st.success("✅ Tutto salvato correttamente!")
-            st.rerun()
+            # 1. Processo Entrate
+            if not ed_ent.empty: 
+                save_list.append(ed_ent)
+                # Apprendimento
+                validi = ed_ent[ed_ent["Categoria"] != "DA VERIFICARE"]
+                for _, row in validi.iterrows():
+                    keyword_list.append({"Parola": row["Descrizione"], "Categoria": row["Categoria"]})
+
+            # 2. Processo Uscite
+            if not ed_usc.empty: 
+                save_list.append(ed_usc)
+                # Apprendimento
+                validi = ed_usc[ed_usc["Categoria"] != "DA VERIFICARE"]
+                for _, row in validi.iterrows():
+                    keyword_list.append({"Parola": row["Descrizione"], "Categoria": row["Categoria"]})
+
+            # 3. Processo Manuale
+            if not ed_man.empty:
+                # FIX ANTI-CRASH
+                ed_man["Importo"] = pd.to_numeric(ed_man["Importo"], errors='coerce').fillna(0.0)
+                v = ed_man[ed_man["Importo"] > 0].copy()
+                if not v.empty:
+                    v["Data"] = pd.to_datetime(v["Data"])
+                    v["Mese"] = v["Data"].dt.strftime('%b-%y')
+                    v["Firma"] = [f"MAN-{uuid.uuid4().hex[:6]}" for _ in range(len(v))]
+                    save_list.append(v)
+                    # Apprendimento anche dal manuale
+                    validi = v[v["Categoria"] != "DA VERIFICARE"]
+                    for _, row in validi.iterrows():
+                        keyword_list.append({"Parola": row["Descrizione"], "Categoria": row["Categoria"]})
+
+            # 4. SALVATAGGIO FINALE
+            if save_list:
+                # A. Aggiorna DB Transazioni
+                fin = pd.concat([df_cloud] + save_list, ignore_index=True)
+                fin["Data"] = pd.to_datetime(fin["Data"]).dt.strftime("%Y-%m-%d")
+                conn.update(worksheet="DB_TRANSAZIONI", data=fin)
+                
+                # B. Aggiorna DB KEYWORDS (Apprendimento)
+                if keyword_list:
+                    try:
+                        # Legge esistenti
+                        try:
+                            old_kw = conn.read(worksheet="DB_KEYWORDS", usecols=[0,1])
+                        except:
+                            old_kw = pd.DataFrame(columns=["Parola", "Categoria"])
+                        
+                        # Crea DataFrame nuovi
+                        new_kw_df = pd.DataFrame(keyword_list)
+                        
+                        # Unisce e rimuove duplicati (tiene l'ultimo inserito, così aggiorna le regole)
+                        final_kw = pd.concat([old_kw, new_kw_df], ignore_index=True)
+                        final_kw["Parola"] = final_kw["Parola"].astype(str).str.strip()
+                        final_kw = final_kw.drop_duplicates(subset=["Parola"], keep='last')
+                        
+                        # Salva
+                        conn.update(worksheet="DB_KEYWORDS", data=final_kw)
+                        get_custom_map.clear() # Pulisce la cache per ricaricare subito le nuove regole
+                    except Exception as e:
+                        st.warning(f"Transazioni salvate, ma errore nel salvare le nuove regole: {e}")
+
+                # Pulizia sessione
+                st.session_state["df_mail_found"] = pd.DataFrame()
+                st.session_state["df_manual_entry"] = pd.DataFrame()
+                st.session_state["df_mail_discarded"] = pd.DataFrame()
+                
+                st.balloons()
+                st.success("✅ Salvato! Le nuove categorie sono state memorizzate.")
+                st.rerun()
 
 # ==============================================================================
 # TAB 5: STORICO
@@ -1084,6 +1120,7 @@ with tab_stor:
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
         st.success("Database aggiornato correttamnte!")
         st.rerun()
+
 
 
 
