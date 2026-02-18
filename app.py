@@ -529,46 +529,55 @@ with tab_bil:
     if "Budget" not in bilancio.columns: bilancio["Budget"] = 0.0
     if "Reale" not in bilancio.columns: bilancio["Reale"] = 0.0
 
-    # 6. Estrazione Valori Chiave
+    # 6. Estrazione Valori Chiave (COMPLETO)
     
-    # --- CALCOLO SALDO INIZIALE DINAMICO (FIX) ---
-    # 1. Prendiamo il Saldo di Partenza dell'Anno (dal Budget di Gennaio)
+    # --- A. SALDO INIZIALE DINAMICO ---
+    # 1. Base: Saldo Budget di Gennaio (soldi a inizio anno)
     saldo_start_anno = 0.0
     if not df_budget_b.empty:
-        # Cerca quanto avevi a Gennaio secondo il budget
         mask_gen = (df_budget_b["Mese"] == "Gen") & (df_budget_b["Categoria"] == "SALDO INIZIALE")
         if mask_gen.any():
             saldo_start_anno = df_budget_b.loc[mask_gen, "Importo"].sum()
 
-    # 2. Identifichiamo il primo mese del periodo che stai guardando
+    # 2. Calcolo Delta Mesi Precedenti (quanto è successo prima del mese che guardi)
     mese_start_view = min(l_num_b)
-
-    # 3. Calcoliamo il "Riporto" dei mesi precedenti
-    # (Se guardi Marzo, calcola: Entrate Reali Gen+Feb - Uscite Reali Gen+Feb)
     delta_precedente = 0.0
-    
-    if mese_start_view > 1: # Se non siamo a Gennaio
-        # Prendi tutte le transazioni dell'anno PRIMA di questo mese
+
+    if mese_start_view > 1:
+        # Filtra transazioni REALI antecedenti al mese selezionato nello stesso anno
         mask_prev = (df_analysis_b["Anno"] == anno_b) & (df_analysis_b["MeseNum"] < mese_start_view)
         df_prev = df_analysis_b[mask_prev]
-        
+
         if not df_prev.empty:
-            # Somma entrate (escluso saldo iniziale duplicato)
+            # Entrate Totali precedenti (escluso saldo iniziale)
             ent_prev = df_prev[(df_prev["Tipo"] == "Entrata") & (df_prev["Categoria"] != "SALDO INIZIALE")]["Importo"].sum()
+            # Uscite Totali precedenti
             usc_prev = df_prev[df_prev["Tipo"] == "Uscita"]["Importo"].sum()
             delta_precedente = ent_prev - usc_prev
 
-    # 4. Risultato Finale: Saldo Iniziale REALE del periodo
+    # 3. Saldo Iniziale Reale Definitivo
     saldo_ini_real = saldo_start_anno + delta_precedente
-    
-    # Per il Budget, manteniamo la logica semplice (somma righe budget periodo)
+
+    # Saldo Iniziale Budget (resta la somma del periodo selezionato)
     saldo_ini_row = bilancio[bilancio["Categoria"] == "SALDO INIZIALE"]
     saldo_ini_bud = saldo_ini_row["Budget"].sum()
-    # ---------------------------------------------
 
-    # Entrate Operative
+    # --- B. ENTRATE E USCITE OPERATIVE (Periodo Corrente) ---
+    # (Queste righe mancavano prima e causavano l'errore)
     ent_op_df = bilancio[(bilancio["Tipo"]=="Entrata") & (bilancio["Categoria"]!="SALDO INIZIALE")]
-    # ... il resto del codice rimane uguale da qui in poi ...
+    ent_op_bud = ent_op_df["Budget"].sum()
+    ent_op_real = ent_op_df["Reale"].sum()
+
+    usc_op_df = bilancio[bilancio["Tipo"]=="Uscita"]
+    usc_op_bud = usc_op_df["Budget"].sum()
+    usc_op_real = usc_op_df["Reale"].sum()
+
+    # --- C. UTILE E SALDO FINALE ---
+    utile_bud = ent_op_bud - usc_op_bud
+    utile_real = ent_op_real - usc_op_real
+
+    saldo_fin_bud = saldo_ini_bud + utile_bud
+    saldo_fin_real = saldo_ini_real + utile_real
     # ==========================================================================
     # LOGICA PRIVACY MODE (Inserita qui, dopo i calcoli)
     # ==========================================================================
@@ -1131,6 +1140,7 @@ with tab_stor:
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
         st.success("Database aggiornato correttamnte!")
         st.rerun()
+
 
 
 
