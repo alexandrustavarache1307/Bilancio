@@ -1029,11 +1029,31 @@ with tab_imp:
         st.markdown("---")
         st.markdown("##### ✍️ Manuale / Correzioni")
         
+        # --- FIX TABELLA VUOTA ---
+        # Se la tabella manuale è vuota, creiamo una riga vuota "fantasma" per facilitare l'inserimento
+        df_manual_init = st.session_state["df_manual_entry"]
+        
+        if df_manual_init.empty:
+            # Creiamo una riga vuota con la data di oggi come default
+            df_manual_init = pd.DataFrame([{
+                "Data": datetime.now(), 
+                "Descrizione": "", 
+                "Importo": 0.0, 
+                "Tipo": "Uscita", 
+                "Categoria": "DA VERIFICARE"
+            }])
+
         ed_man = st.data_editor(
-            st.session_state["df_manual_entry"],
-            num_rows="dynamic",
-            column_config={"Categoria": st.column_config.SelectboxColumn(options=sorted(CAT_USCITE + CAT_ENTRATE))},
-            key="edit_manual", use_container_width=True
+            df_manual_init,
+            num_rows="dynamic", # Permette di aggiungere righe
+            column_config={
+                "Categoria": st.column_config.SelectboxColumn(options=sorted(CAT_USCITE + CAT_ENTRATE), required=True),
+                "Tipo": st.column_config.SelectboxColumn(options=["Entrata", "Uscita"], required=True),
+                "Data": st.column_config.DateColumn(format="YYYY-MM-DD", required=True),
+                "Importo": st.column_config.NumberColumn(format="%.2f €", required=True, default=0.0)
+            },
+            key="edit_manual", 
+            use_container_width=True
         )
 
         # BOTTONE UNICO DI INVIO
@@ -1256,6 +1276,7 @@ with tab_stor:
                     
             except Exception as e:
                 st.error(f"Errore durante il salvataggio: {e}")
+
 
 
 
