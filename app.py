@@ -83,6 +83,16 @@ except Exception as e:
 # ==============================================================================
 
 @st.cache_data(ttl=60)
+def get_custom_map():
+    """Carica le associazioni imparate dal foglio DB_KEYWORDS."""
+    try:
+        # Legge colonne A e B (Parola, Categoria)
+        df = conn.read(worksheet="DB_KEYWORDS", usecols=[0, 1])
+        if df.empty: return {}
+        # Crea un dizionario { 'beyfin': 'Carburante', ... }
+        return dict(zip(df.iloc[:, 0].astype(str).str.lower().str.strip(), df.iloc[:, 1]))
+    except:
+        return {}
 def get_categories():
     """Carica le categorie dal foglio '2026'."""
     try:
@@ -1064,6 +1074,7 @@ with tab_stor:
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
         st.success("Database aggiornato correttamnte!")
         st.rerun()
+
 
 
 
