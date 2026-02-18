@@ -204,13 +204,23 @@ def get_budget_data():
 # ==============================================================================
 
 def trova_categoria_smart(descrizione, lista_categorie_disponibili):
-    """Assegna una categoria in base alle parole chiave."""
-    desc_lower = descrizione.lower()
+    """Assegna categoria: Prima controlla memoria, poi keyword fisse, poi nome."""
+    desc_lower = descrizione.lower().strip()
     
-    # 1. Controllo Keyword Dirette
+    # 0. CARICAMENTO MEMORIA (Imparata)
+    mappa_custom = get_custom_map()
+    
+    # Cerca se una parola imparata è contenuta nella descrizione
+    for parola_learned, cat_learned in mappa_custom.items():
+        if parola_learned in desc_lower:
+            # Verifica che la categoria imparata esista ancora
+            for c in lista_categorie_disponibili:
+                if cat_learned.lower() == c.lower():
+                    return c
+
+    # 1. Controllo Keyword Hardcoded (MAPPA_KEYWORD)
     for parola_chiave, target_categoria in MAPPA_KEYWORD.items():
         if parola_chiave in desc_lower:
-            # Verifico se la categoria target esiste nella lista disponibile
             for cat in lista_categorie_disponibili:
                 if target_categoria.lower() in cat.lower():
                     return cat
@@ -1074,6 +1084,7 @@ with tab_stor:
         conn.update(worksheet="DB_TRANSAZIONI", data=df_to_update)
         st.success("Database aggiornato correttamnte!")
         st.rerun()
+
 
 
 
